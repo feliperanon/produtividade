@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dashboard de Performance de Filetadores</title>
+  <!-- Tailwind CSS via CDN para estilização rápida -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Bibliotecas React e Recharts -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <!-- Babel Standalone para transpilar JSX no navegador -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <!-- PapaParse para analisar dados CSV -->
+  <script src="https://unpkg.com/papaparse@latest/papaparse.min.js"></script>
+  <!-- Dependência PropTypes para Recharts -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prop-types/15.8.1/prop-types.min.js"></script>
+  <!-- Recharts para gráficos -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/recharts/2.12.7/Recharts.min.js"></script>
+</head>
+<body class="bg-gray-100 font-sans">
+  <div id="root" class="container mx-auto p-4"></div>
+
+  <script type="text/babel">
+    // Inicializando a raiz do React
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+
+    // --- DADOS DE EXEMPLO (MOCK) ---
+    // NOTA: O carregamento de arquivos locais (como .xlsx) diretamente no JavaScript do navegador é restrito por segurança.
+    // Para uma aplicação real, você precisaria de um input de upload de arquivo ou carregar os dados de um servidor.
+    // Para demonstração, os dados do CSV estão inseridos diretamente aqui.
+    // Certifique-se de que seu arquivo XLSX seja convertido para este formato CSV.
+    const mockCsvData = `Filetador,Data,Semana,Peixe Recebido (Kg),Filé Produzido (Kg),Rend (%),M. peixe (Kg),M. Filé (Kg),Rend. (%),Total peixes (Kg),Valor prêmio,Valor bônus,Dias trabalhados
+"JOÃO SILVA",45811,,55.3,21.5,0.3888,,,,,,,
+"JOÃO SILVA",45812,,60.1,23.5,0.3910,,,,,,,
+"JOÃO SILVA",,Semana 1,,,,57.7,22.5,0.3900,550,50,25,10
+"JOÃO SILVA",45818,,58.2,24.1,0.4141,,,,,,,
+"JOÃO SILVA",45819,,62.5,26.3,0.4208,,,,,,,
+"JOÃO SILVA",,Semana 2,,,,60.35,25.2,0.4176,600,60,30,11
+"JOÃO SILVA",,Semana 3,,,,59.5,24.8,0.4168,610,62,31,12
+"MARIA COSTA",45811,,52.1,21.9,0.4203,,,,,,,
+"MARIA COSTA",45812,,54.3,22.9,0.4217,,,,,,,
+"MARIA COSTA",,Semana 1,,,,53.2,22.4,0.4210,530,55,28,10
+"MARIA COSTA",45818,,53.9,23.2,0.4304,,,,,,,
+"MARIA COSTA",45819,,55.1,23.8,0.4319,,,,,,,
+"MARIA COSTA",,Semana 2,,,,54.5,23.5,0.4311,540,58,29,11
+"MARIA COSTA",,Semana 3,,,,56.0,24.5,0.4375,560,60,30,12
+"PEDRO ALVES",45813,,65.0,26.0,0.4000,,,,,,,
+"PEDRO ALVES",45814,,68.0,28.0,0.4117,,,,,,,
+"PEDRO ALVES",,Semana 1,,,,66.5,27.0,0.4060,700,70,35,10
+"PEDRO ALVES",,Semana 2,,,,0,0,0,0,0,0,0
+"PEDRO ALVES",,Semana 3,,,,67.0,27.5,0.4104,720,75,38,11
+`;
+
+    // Componente principal da Aplicação
+    const App = () => {
+      const [data, setData] = React.useState(null);
+      const [selectedWeek, setSelectedWeek] = React.useState('');
+      const [selectedFiletador, setSelectedFiletador] = React.useState('Todos');
+      const [loading, setLoading] = React.useState(true);
+
+      // Carregando e processando os dados do CSV na montagem do componente
+      React.useEffect(() => {
+        try {
+          Papa.parse(mockCsvData, {
+            header: true,
+            skipEmptyLines: true,
+            dynamicTyping: false,
+            transformHeader: header => header.trim(),
+            transform: (value, header) => {
+              const cleaned = value.trim();
+              const numericHeaders = ['Peixe Recebido (Kg)', 'Filé Produzido (Kg)', 'Rend (%)', 'M. peixe (Kg)', 'M. Filé (Kg)', 'Rend. (%)', 'Total peixes (Kg)', 'Valor prêmio', 'Valor bônus', 'Dias trabalhados'];
+              if (numericHeaders.includes(header)) {
+                // Converte para número, tratando vírgula como decimal e removendo outros caracteres
+                const numericValue = parseFloat(cleaned.replace(',', '.'));
+                return isNaN(numericValue) ? 0 : numericValue;
+              }
+              return cleaned;
+            },
+            complete: (results) => {
+              const cleanedData = processData(results.data);
+              setData(cleanedData);
+              setLoading(false);
+            },
+            error: (err) => {
+              console.error('Erro ao parsear CSV:', err);
+              setLoading(false);
+            }
+          });
+        } catch (err) {
+          console.error('Erro no useEffect:', err);
+          setLoading(false);
+        }
+      }, []);
+
+      // Processa os dados brutos para agrupar por filetador e semana
+      const processData = (rawData) => {
+        const employees = {};
+        rawData.forEach(row => {
+          const employee = row['Filetador'];
+          if (!employee || employee === '') return;
+
+          if (!employees[employee]) {
+            employees[employee] = {
+              daily: [],
+              weekly: {},
+              totals: { peixe: 0, file: 0, rend: 0, premio: 0, bonus: 0 },
+              daysWorked: 0
+            };
+          }
+          
+          const currentEmployee = employees[employee];
+
+          // Popula dados diários
+          if (row['Data'] && row['Peixe Recebido (Kg)'] > 0) {
+            currentEmployee.daily.push({
+              date: row['Data'],
+              peixe: row['Peixe Recebido (Kg)'],
+              file: row['Filé Produzido (Kg)'],
+              rend: row['Rend (%)']
+            });
+          }
+
+          // Popula dados semanais
+          if (row['Semana'] && row['M. peixe (Kg)'] > 0) {
+            currentEmployee.weekly[row['Semana']] = {
+              peixe: row['M. peixe (Kg)'],
+              file: row['M. Filé (Kg)'],
+              rend: row['Rend. (%)']
+            };
+          }
+
+          // Popula totais. Assumimos que os totais aparecem em uma linha de resumo.
+          if (row['Total peixes (Kg)']) currentEmployee.totals.peixe = row['Total peixes (Kg)'];
+          if (row['Valor prêmio']) currentEmployee.totals.premio = row['Valor prêmio'];
+          if (row['Valor bônus']) currentEmployee.totals.bonus = row['Valor bônus'];
+          if (row['Dias trabalhados']) currentEmployee.daysWorked = row['Dias trabalhados'];
+        });
+        
+        // Define a semana mais recente com dados como a semana selecionada por padrão
+        const weeks = ['Semana 1', 'Semana 2', 'Semana 3', 'Semana 4', 'Semana 5'];
+        for (let week of [...weeks].reverse()) {
+          if (Object.values(employees).some(emp => emp.weekly[week] && emp.weekly[week].peixe > 0)) {
+            // Usamos um timeout para garantir que o estado seja atualizado após a renderização inicial
+            setTimeout(() => setSelectedWeek(week), 0);
+            break;
+          }
+        }
+
+        return employees;
+      };
+
+      if (loading) {
+        return (
+          <div className="flex justify-center items-center h-screen">
+            <p className="text-xl text-gray-700">Carregando dados...</p>
+          </div>
+        );
+      }
+
+      if (!data) {
+        return (
+          <div className="flex justify-center items-center h-screen">
+            <p className="text-xl text-red-600">Erro ao carregar os dados. Verifique o console.</p>
+          </div>
+        );
+      }
+      
+      const filetadores = ['Todos', ...Object.keys(data).sort()];
+      const weeksWithData = ['Semana 1', 'Semana 2', 'Semana 3', 'Semana 4', 'Semana 5'].filter(week => 
+          Object.values(data).some(emp => emp.weekly[week] && emp.weekly[week].peixe > 0)
+      );
+      
+      // Calcula o resumo para a semana selecionada
+      const weekSummary = Object.entries(data)
+        .filter(([name]) => selectedFiletador === 'Todos' || name === selectedFiletador)
+        .reduce((acc, [_, emp]) => {
+          const weekData = emp.weekly[selectedWeek] || { peixe: 0, file: 0, rend: 0 };
+          if(weekData.peixe > 0) {
+            acc.peixe += weekData.peixe;
+            acc.file += weekData.file;
+            acc.rendSum += weekData.rend; // Soma dos rendimentos para média
+            acc.count += 1; // Contador de filetadores com produção na semana
+          }
+          return acc;
+        }, { peixe: 0, file: 0, rendSum: 0, count: 0 });
+
+      const avgRend = weekSummary.count > 0 ? (weekSummary.rendSum / weekSummary.count * 100).toFixed(2) : 0;
+      
+      // Encontra o filetador com melhor performance na semana
+      const topPerformer = Object.entries(data)
+        .reduce((top, [name, emp]) => {
+          const rend = emp.weekly[selectedWeek]?.rend || 0;
+          return rend > top.rend ? { name, rend: rend * 100 } : top;
+        }, { name: '', rend: 0 });
+
+      // Prepara dados para o gráfico de tendência (Eixo X = Semanas, Linhas = Filetadores)
+      const rendTrendData = weeksWithData.map(week => {
+          const weekData = { week };
+          Object.entries(data)
+            .filter(([name]) => selectedFiletador === 'Todos' || name === selectedFiletador)
+            .forEach(([name, emp]) => {
+                weekData[name] = parseFloat((emp.weekly[week]?.rend * 100 || 0).toFixed(2));
+            });
+          return weekData;
+      });
+
+      // Prepara dados para o gráfico de bônus
+      const bonusData = Object.entries(data)
+        .filter(([name]) => selectedFiletador === 'Todos' || name === selectedFiletador)
+        .map(([name, emp]) => ({
+          name,
+          totalBonus: (emp.totals.premio || 0) + (emp.totals.bonus || 0)
+        })).sort((a, b) => b.totalBonus - a.totalBonus);
+
+      // Função para formatar números grandes
+      const formatNumber = (num) => {
+        if (isNaN(num) || num === null || num === undefined) return '0.00';
+        return num.toFixed(2);
+      };
+      
+      // Converte a data serial do Excel para uma data legível
+      // O número de série do Excel representa o número de dias desde 1º de janeiro de 1900.
+      const excelDateToJSDate = (serial) => {
+        if(!serial || isNaN(serial)) return "Data inválida";
+        const utc_days = Math.floor(serial - 25569);
+        const utc_value = utc_days * 86400;
+        const date_info = new Date(utc_value * 1000);
+        return new Intl.DateTimeFormat('pt-BR', { timeZone: 'UTC' }).format(date_info);
+      };
+
+      // Função para gerar cores aleatórias para os gráficos
+      const lineColors = {};
+      filetadores.slice(1).forEach(name => {
+          lineColors[name] = `hsl(${Math.random() * 360}, 70%, 50%)`;
+      });
+
+      return (
+        <div className="space-y-8">
+          <h1 className="text-3xl font-bold text-center text-gray-800">Feedback Semanal de Filetadores</h1>
+
+          {/* Seletores */}
+          <div className="flex flex-wrap justify-center items-center gap-4 p-4 bg-white rounded-lg shadow">
+            <select
+              className="p-2 border rounded-lg bg-white text-gray-700 shadow-sm focus:ring-2 focus:ring-blue-500"
+              value={selectedWeek}
+              onChange={(e) => setSelectedWeek(e.target.value)}
+            >
+              <option value="" disabled>Selecione uma Semana</option>
+              {weeksWithData.map(week => (
+                <option key={week} value={week}>{week}</option>
+              ))}
+            </select>
+            <select
+              className="p-2 border rounded-lg bg-white text-gray-700 shadow-sm focus:ring-2 focus:ring-blue-500"
+              value={selectedFiletador}
+              onChange={(e) => setSelectedFiletador(e.target.value)}
+            >
+              {filetadores.map(filetador => (
+                <option key={filetador} value={filetador}>{filetador}</option>
+              ))}
+            </select>
+          </div>
+
+          {/* Resumo Semanal */}
+          {selectedWeek && (
+            <div className="bg-white p-6 rounded-lg shadow-md transition-all duration-300">
+              <h2 className="text-2xl font-semibold text-gray-800 mb-4">{selectedWeek} - Resumo ({selectedFiletador})</h2>
+              <div className="grid md:grid-cols-3 gap-4 text-center">
+                <div className="p-4 bg-blue-50 rounded-lg">
+                  <p className="text-lg font-medium text-blue-800">Peixe Recebido (Kg)</p>
+                  <p className="text-3xl font-bold text-blue-600">{formatNumber(weekSummary.peixe)}</p>
+                </div>
+                <div className="p-4 bg-green-50 rounded-lg">
+                  <p className="text-lg font-medium text-green-800">Filé Produzido (Kg)</p>
+                  <p className="text-3xl font-bold text-green-600">{formatNumber(weekSummary.file)}</p>
+                </div>
+                <div className="p-4 bg-yellow-50 rounded-lg">
+                  <p className="text-lg font-medium text-yellow-800">Rendimento Médio (%)</p>
+                  <p className="text-3xl font-bold text-yellow-600">{avgRend}%</p>
+                </div>
+              </div>
+              {topPerformer.name && (
+                <p className="mt-6 text-center text-lg text-gray-700">
+                  <span className="font-bold text-indigo-600">⭐ Destaque da Semana:</span> {topPerformer.name} com <span className="font-semibold">{topPerformer.rend.toFixed(2)}%</span> de rendimento!
+                </p>
+              )}
+            </div>
+          )}
+          
+          <div className="grid lg:grid-cols-2 gap-8">
+            {/* Gráfico de Tendência de Rendimento */}
+            <div className="bg-white p-6 rounded-lg shadow-md">
+              <h2 className="text-2xl font-semibold text-gray-800 mb-4">Tendência de Rendimento (%)</h2>
+              <Recharts.ResponsiveContainer width="100%" height={400}>
+                <Recharts.LineChart data={rendTrendData}>
+                  <Recharts.CartesianGrid strokeDasharray="3 3" />
+                  <Recharts.XAxis dataKey="week" />
+                  <Recharts.YAxis domain={[dataMin => (dataMin * 0.95).toFixed(0), dataMax => (dataMax * 1.05).toFixed(0)]} />
+                  <Recharts.Tooltip formatter={(value) => `${value}%`} />
+                  <Recharts.Legend />
+                  {Object.keys(data)
+                    .filter(name => selectedFiletador === 'Todos' || name === selectedFiletador)
+                    .map(name => (
+                    <Recharts.Line
+                      key={name}
+                      type="monotone"
+                      dataKey={name}
+                      stroke={lineColors[name] || '#8884d8'}
+                      strokeWidth={2}
+                      name={name}
+                    />
+                  ))}
+                </Recharts.LineChart>
+              </Recharts.ResponsiveContainer>
+            </div>
+
+            {/* Gráfico de Bônus */}
+            <div className="bg-white p-6 rounded-lg shadow-md">
+                <h2 className="text-2xl font-semibold text-gray-800 mb-4">Projeção de Bônus Total (Prêmio + Bônus)</h2>
+                <Recharts.ResponsiveContainer width="100%" height={400}>
+                    <Recharts.BarChart data={bonusData} layout="vertical">
+                        <Recharts.CartesianGrid strokeDasharray="3 3" />
+                        <Recharts.XAxis type="number" />
+                        <Recharts.YAxis type="category" dataKey="name" width={100} />
+                        <Recharts.Tooltip formatter={(value) => `R$${formatNumber(value)}`} />
+                        <Recharts.Legend />
+                        <Recharts.Bar dataKey="totalBonus" fill="#82ca9d" name="Bônus Total" />
+                    </Recharts.BarChart>
+                </Recharts.ResponsiveContainer>
+            </div>
+          </div>
+
+
+          {/* Detalhes Individuais */}
+          {selectedFiletador !== 'Todos' && Object.entries(data)
+            .filter(([employee]) => employee === selectedFiletador)
+            .map(([employee, empData]) => {
+                // NOTA: A lógica para filtrar dados diários por semana é complexa sem uma coluna 'Semana' nos dados diários.
+                // A lógica original usava um número "mágico" (45810).
+                // Uma solução robusta seria adicionar a semana a cada entrada diária na fonte de dados.
+                // Aqui, exibiremos todos os dados diários do funcionário para simplificar.
+              const dailyData = empData.daily;
+
+              return (
+                <div key={employee} className="bg-white p-6 rounded-lg shadow-md mt-8">
+                  <h2 className="text-2xl font-semibold text-gray-800 mb-4">Detalhes Diários - {employee}</h2>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse">
+                      <thead className="bg-gray-200">
+                        <tr>
+                          <th className="p-3 border font-semibold">Data</th>
+                          <th className="p-3 border font-semibold">Peixe Recebido (Kg)</th>
+                          <th className="p-3 border font-semibold">Filé Produzido (Kg)</th>
+                          <th className="p-3 border font-semibold">Rend (%)</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {dailyData.length > 0 ? dailyData.map((day, index) => (
+                          <tr key={index} className="hover:bg-gray-50">
+                            <td className="p-2 border">{excelDateToJSDate(day.date)}</td>
+                            <td className="p-2 border">{formatNumber(day.peixe)}</td>
+                            <td className="p-2 border">{formatNumber(day.file)}</td>
+                            <td className="p-2 border text-blue-600 font-medium">{(day.rend * 100).toFixed(2)}%</td>
+                          </tr>
+                        )) : (
+                          <tr>
+                            <td colSpan="4" className="p-4 text-center text-gray-500">Nenhum dado diário encontrado.</td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              );
+            })}
+        </div>
+      );
+    };
+
+    // Renderizando o app no DOM
+    root.render(<App />);
+  </script>
+</body>
+</html>

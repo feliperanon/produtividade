@@ -1,0 +1,1912 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard de Performance de Filetadores</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prop-types/15.8.1/prop-types.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/recharts/2.12.7/Recharts.min.js"></script>
+    
+    
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/9.6.10/firebase-app.js";
+        import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/9.6.10/firebase-auth.js";
+        import { getFirestore, collection, addDoc, onSnapshot, query, where, limit, getDocs, doc, updateDoc, deleteDoc, orderBy, serverTimestamp, writeBatch } from "https://www.gstatic.com/firebasejs/9.6.10/firebase-firestore.js";
+        window.firebase9 = { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut, getFirestore, collection, addDoc, onSnapshot, query, where, limit, getDocs, doc, updateDoc, deleteDoc, orderBy, serverTimestamp, writeBatch, initializeApp };
+    </script>
+
+</head>
+<body class="bg-gray-100 font-sans">
+    <div id="root"></div>
+
+    <script type="text/babel">
+    // --- Configuração do Firebase ---
+    const firebaseConfig = {
+        apiKey: "AIzaSyAHfit46TkZaOgEHVX3knmUnqUIVIXDmCI",
+        authDomain: "painel-filetadores.firebaseapp.com",
+        projectId: "painel-filetadores",
+        storageBucket: "painel-filetadores.appspot.com",
+        messagingSenderId: "536826620604",
+        appId: "1:536826620604:web:89930f02e9c91930cc7eb9",
+        measurementId: "G-TFGJQKF1W6"
+    };
+
+    // --- Inicialização do Firebase (usando a v9) ---
+    let app, auth, db;
+    try {
+        app = window.firebase9.initializeApp(firebaseConfig);
+        auth = window.firebase9.getAuth(app);
+        db = window.firebase9.getFirestore(app);
+    } catch (e) {
+        console.error("Erro ao inicializar o Firebase:", e);
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+
+    // --- Funções Utilitárias ---
+    const excelSerialDateToJSDate = (serial) => { if (!serial || isNaN(serial)) return null; const utc_days = Math.floor(serial - 25569); const utc_value = utc_days * 86400; return new Date(utc_value * 1000); };
+    const formatDate = (date) => { if(!date) return "Data Inválida"; return new Intl.DateTimeFormat('pt-BR', { timeZone: 'UTC' }).format(date); };
+    const formatDateTime = (date) => { if (!date) return "Data Inválida"; const dateObj = date.toDate ? date.toDate() : date; return new Intl.DateTimeFormat('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }).format(dateObj); };
+    const formatTime = (date) => { if (!date) return "--:--"; const dateObj = date.toDate ? date.toDate() : date; return new Intl.DateTimeFormat('pt-BR', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' }).format(dateObj); };
+    const getWeekNumber = (d) => { d = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate())); d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay()||7)); const yearStart = new Date(Date.UTC(d.getUTCFullYear(),0,1)); const weekNo = Math.ceil((((d - yearStart) / 86400000) + 1)/7); return weekNo; };
+    const formatNumberWithSeparators = (num) => { if (num === null || num === undefined || isNaN(num)) { return '0,00'; } return num.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
+    
+    const parseDate = (dateInput) => {
+        if (!dateInput) return null;
+        if (dateInput.toDate) return dateInput.toDate();
+        if (typeof dateInput === 'number' && dateInput > 1) { return excelSerialDateToJSDate(dateInput); }
+        if (typeof dateInput === 'string' && /^\d{4}-\d{2}-\d{2}/.test(dateInput)) { const d = new Date(dateInput); return new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()); }
+        if (typeof dateInput === 'string') {
+            const parts = dateInput.split(/[\/\- ]/);
+            if (parts.length >= 3) {
+                const day = parseInt(parts[0], 10);
+                const monthStr = parts[1];
+                let year = parseInt(parts[2], 10);
+                const months = {'jan':0,'fev':1,'mar':2,'abr':3,'mai':4,'jun':5,'jul':6,'ago':7,'set':8,'out':9,'nov':10,'dez':11};
+                let month;
+                if (isNaN(parseInt(monthStr, 10))) { month = months[monthStr.toLowerCase().substring(0, 3)]; } else { month = parseInt(monthStr, 10) - 1; }
+                if (!isNaN(day) && month !== undefined && !isNaN(year)) { if (year < 100) year += 2000; return new Date(Date.UTC(year, month, day)); }
+            }
+        }
+        const d = new Date(dateInput);
+        return (d instanceof Date && !isNaN(d)) ? d : null;
+    };
+
+    const monthNames = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
+    const safeParseFloat = (str) => { if (typeof str !== 'string' || !str) return 0; const cleanStr = str.toString().replace(',', '.'); return parseFloat(cleanStr) || 0; };
+
+    // --- COMPONENTES ---
+
+    function ConfirmationModal({ isOpen, onClose, onConfirm, title, message, isLoading }) {
+        if (!isOpen) return null;
+        return (
+            <div className="fixed inset-0 bg-black bg-opacity-60 flex justify-center items-center z-50">
+                <div className="bg-white p-6 rounded-lg shadow-xl max-w-sm w-full mx-4">
+                    <h3 className="text-xl font-bold text-gray-800">{title}</h3>
+                    <p className="text-gray-600 mt-2 mb-6">{message}</p>
+                    <div className="flex justify-end gap-4">
+                        <button onClick={onClose} disabled={isLoading} className="bg-gray-300 text-gray-800 font-bold py-2 px-4 rounded-lg hover:bg-gray-400 transition">
+                            Cancelar
+                        </button>
+                        <button onClick={onConfirm} disabled={isLoading} className="bg-red-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-red-700 transition disabled:bg-red-400">
+                            {isLoading ? 'Confirmando...' : 'Confirmar'}
+                        </button>
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
+    function LoginPage() {
+        const [email, setEmail] = React.useState('');
+        const [password, setPassword] = React.useState('');
+        const [error, setError] = React.useState('');
+        const [isLoading, setIsLoading] = React.useState(false);
+
+        const handleLogin = (e) => {
+            e.preventDefault();
+            setIsLoading(true);
+            setError('');
+
+            window.firebase9.signInWithEmailAndPassword(auth, email, password)
+                .then((userCredential) => {
+                    console.log('Login bem-sucedido:', userCredential.user.email);
+                })
+                .catch((err) => {
+                    setError('E-mail ou senha inválidos. Tente novamente.');
+                    console.error("Erro de autenticação:", err.message);
+                })
+                .finally(() => {
+                    setIsLoading(false);
+                });
+        };
+
+        return (
+            <div className="flex flex-col justify-center items-center min-h-screen bg-gray-100">
+                <div className="w-full max-w-md bg-white p-8 rounded-xl shadow-lg">
+                    <h1 className="text-3xl font-bold text-gray-800 text-center mb-2">Login</h1>
+                    <p className="text-center text-gray-500 mb-6">Acesse o painel de performance.</p>
+                    
+                    <form onSubmit={handleLogin} className="space-y-6">
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700">E-mail</label>
+                            <input
+                                type="email"
+                                value={email}
+                                onChange={(e) => setEmail(e.target.value)}
+                                className="mt-1 block w-full p-3 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
+                                required
+                            />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700">Senha</label>
+                            <input
+                                type="password"
+                                value={password}
+                                onChange={(e) => setPassword(e.target.value)}
+                                className="mt-1 block w-full p-3 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
+                                required
+                            />
+                        </div>
+                        
+                        {error && (
+                            <p className="text-red-600 text-sm text-center">{error}</p>
+                        )}
+
+                        <div>
+                            <button 
+                                type="submit" 
+                                disabled={isLoading}
+                                className="w-full flex justify-center py-3 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:bg-gray-400"
+                            >
+                                {isLoading ? 'Entrando...' : 'Entrar'}
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        );
+    }
+    
+    function RegistrationPage() {
+        const [fornecedorNome, setFornecedorNome] = React.useState('');
+        const [fornecedoresList, setFornecedoresList] = React.useState([]);
+        const [loadingFornecedores, setLoadingFornecedores] = React.useState(true);
+        const [usuarioNome, setUsuarioNome] = React.useState('');
+        const [usuarioFuncao, setUsuarioFuncao] = React.useState('');
+        const [usuarioPermissao, setUsuarioPermissao] = React.useState('Leitura');
+        const [usuariosList, setUsuariosList] = React.useState([]);
+        const [loadingUsuarios, setLoadingUsuarios] = React.useState(true);
+        const [equipeNome, setEquipeNome] = React.useState('');
+        const [equipeFuncao, setEquipeFuncao] = React.useState('');
+        const [equipeList, setEquipeList] = React.useState([]);
+        const [loadingEquipe, setLoadingEquipe] = React.useState(true);
+        const [notification, setNotification] = React.useState(null);
+
+        const showNotification = (message, type = 'success') => {
+            setNotification({ message, type });
+            setTimeout(() => setNotification(null), 3000);
+        };
+
+        React.useEffect(() => {
+            const q = window.firebase9.query(window.firebase9.collection(db, "fornecedores"));
+            const unsubscribe = window.firebase9.onSnapshot(q, snapshot => {
+                setFornecedoresList(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+                setLoadingFornecedores(false);
+            });
+            return () => unsubscribe();
+        }, []);
+
+        React.useEffect(() => {
+            const q = window.firebase9.query(window.firebase9.collection(db, "usuarios"));
+            const unsubscribe = window.firebase9.onSnapshot(q, snapshot => {
+                setUsuariosList(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+                setLoadingUsuarios(false);
+            });
+            return () => unsubscribe();
+        }, []);
+
+        React.useEffect(() => {
+            const q = window.firebase9.query(window.firebase9.collection(db, "equipe_producao"));
+            const unsubscribe = window.firebase9.onSnapshot(q, snapshot => {
+                setEquipeList(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+                setLoadingEquipe(false);
+            });
+            return () => unsubscribe();
+        }, []);
+        
+        const handleSaveFornecedor = (e) => {
+            e.preventDefault();
+            if (!fornecedorNome.trim()) return;
+            window.firebase9.addDoc(window.firebase9.collection(db, "fornecedores"), { nome: fornecedorNome })
+                .then(() => {
+                    setFornecedorNome('');
+                    showNotification('Fornecedor salvo com sucesso!');
+                })
+                .catch(err => showNotification(`Erro: ${err.message}`, 'error'));
+        };
+
+        const handleSaveUsuario = (e) => {
+            e.preventDefault();
+            if (!usuarioNome.trim() || !usuarioFuncao.trim()) return;
+            window.firebase9.addDoc(window.firebase9.collection(db, "usuarios"), { nome: usuarioNome, funcao: usuarioFuncao, permissao: usuarioPermissao })
+                .then(() => {
+                    setUsuarioNome('');
+                    setUsuarioFuncao('');
+                    setUsuarioPermissao('Leitura');
+                    showNotification('Usuário salvo com sucesso!');
+                })
+                .catch(err => showNotification(`Erro: ${err.message}`, 'error'));
+        };
+
+        const handleSaveEquipe = (e) => {
+            e.preventDefault();
+            if (!equipeNome.trim() || !equipeFuncao.trim()) return;
+            window.firebase9.addDoc(window.firebase9.collection(db, "equipe_producao"), { nome: equipeNome, funcao: equipeFuncao })
+                .then(() => {
+                    setEquipeNome('');
+                    setEquipeFuncao('');
+                    showNotification('Membro da equipe salvo com sucesso!');
+                })
+                .catch(err => showNotification(`Erro: ${err.message}`, 'error'));
+        };
+
+        const renderList = (title, data, loading, columns) => (
+            <div className="mt-4">
+                <h4 className="text-lg font-semibold text-gray-700">{title}</h4>
+                <div className="overflow-x-auto bg-white rounded-lg shadow mt-2 max-h-60">
+                    <table className="w-full text-sm text-left text-gray-500">
+                        <thead className="text-xs text-gray-700 uppercase bg-gray-50 sticky top-0">
+                            <tr>
+                                {columns.map(col => <th key={col.key} scope="col" className="px-6 py-3">{col.label}</th>)}
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {loading ? (
+                                <tr><td colSpan={columns.length} className="px-6 py-4 text-center">Carregando...</td></tr>
+                            ) : data.length === 0 ? (
+                                <tr><td colSpan={columns.length} className="px-6 py-4 text-center">Nenhum item cadastrado.</td></tr>
+                            ) : (
+                                data.map(item => (
+                                    <tr key={item.id} className="bg-white border-b hover:bg-gray-50">
+                                        {columns.map(col => <td key={col.key} className="px-6 py-4">{item[col.key]}</td>)}
+                                    </tr>
+                                ))
+                            )}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        );
+
+        return (
+            <div className="bg-white p-6 md:p-8 rounded-lg shadow-md space-y-12">
+                <h2 className="text-3xl font-bold text-gray-800 text-center">Central de Cadastros</h2>
+                
+                {notification && <div className={`p-4 mb-4 rounded-md ${notification.type === 'success' ? 'bg-green-100 border-green-500 text-green-700' : 'bg-red-100 border-red-500 text-red-700'} border-l-4`} role="alert"><p>{notification.message}</p></div>}
+
+                <div className="p-6 bg-gray-50 rounded-lg shadow-inner">
+                    <h3 className="text-xl font-semibold text-gray-800 mb-4">Cadastro de Fornecedor</h3>
+                    <form onSubmit={handleSaveFornecedor} className="space-y-4">
+                        <div>
+                            <label htmlFor="fornecedorNome" className="block text-sm font-medium text-gray-700">Nome do Fornecedor</label>
+                            <input type="text" id="fornecedorNome" value={fornecedorNome} onChange={e => setFornecedorNome(e.target.value)} className="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm" required />
+                        </div>
+                        <button type="submit" className="w-full bg-blue-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-blue-700 transition">Salvar Fornecedor</button>
+                    </form>
+                    {renderList('Fornecedores Cadastrados', fornecedoresList, loadingFornecedores, [{ key: 'nome', label: 'Nome' }])}
+                </div>
+
+                <div className="p-6 bg-gray-50 rounded-lg shadow-inner">
+                    <h3 className="text-xl font-semibold text-gray-800 mb-4">Cadastro de Usuário do Sistema</h3>
+                    <form onSubmit={handleSaveUsuario} className="space-y-4">
+                        <div className="grid md:grid-cols-2 gap-4">
+                            <div>
+                                <label htmlFor="usuarioNome" className="block text-sm font-medium text-gray-700">Nome</label>
+                                <input type="text" id="usuarioNome" value={usuarioNome} onChange={e => setUsuarioNome(e.target.value)} className="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm" required />
+                            </div>
+                            <div>
+                                <label htmlFor="usuarioFuncao" className="block text-sm font-medium text-gray-700">Função</label>
+                                <input type="text" id="usuarioFuncao" value={usuarioFuncao} onChange={e => setUsuarioFuncao(e.target.value)} className="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm" required />
+                            </div>
+                        </div>
+                        <div>
+                            <label htmlFor="usuarioPermissao" className="block text-sm font-medium text-gray-700">Nível de Permissão</label>
+                            <select id="usuarioPermissao" value={usuarioPermissao} onChange={e => setUsuarioPermissao(e.target.value)} className="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm">
+                                <option>Administrador</option>
+                                <option>Gerente</option>
+                                <option>Operador</option>
+                                <option>Leitura</option>
+                            </select>
+                        </div>
+                        <button type="submit" className="w-full bg-blue-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-blue-700 transition">Salvar Usuário</button>
+                    </form>
+                    {renderList('Usuários Cadastrados', usuariosList, loadingUsuarios, [{ key: 'nome', label: 'Nome' }, { key: 'funcao', label: 'Função' }, { key: 'permissao', label: 'Permissão' }])}
+                </div>
+
+                <div className="p-6 bg-gray-50 rounded-lg shadow-inner">
+                    <h3 className="text-xl font-semibold text-gray-800 mb-4">Cadastro da Equipe de Produção</h3>
+                    <form onSubmit={handleSaveEquipe} className="space-y-4">
+                        <div className="grid md:grid-cols-2 gap-4">
+                            <div>
+                                <label htmlFor="equipeNome" className="block text-sm font-medium text-gray-700">Nome</label>
+                                <input type="text" id="equipeNome" value={equipeNome} onChange={e => setEquipeNome(e.target.value)} className="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm" required />
+                            </div>
+                            <div>
+                                <label htmlFor="equipeFuncao" className="block text-sm font-medium text-gray-700">Função</label>
+                                <input type="text" id="equipeFuncao" value={equipeFuncao} onChange={e => setEquipeFuncao(e.target.value)} className="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm" required />
+                            </div>
+                        </div>
+                        <button type="submit" className="w-full bg-blue-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-blue-700 transition">Salvar Membro</button>
+                    </form>
+                    {renderList('Equipe Cadastrada', equipeList, loadingEquipe, [{ key: 'nome', label: 'Nome' }, { key: 'funcao', label: 'Função' }])}
+                </div>
+            </div>
+        );
+    }
+
+    function ProductionPage({ data, user }) {
+        const [productionEvents, setProductionEvents] = React.useState([]);
+        const [pendingEntries, setPendingEntries] = React.useState({});
+        const [selectedEmployee, setSelectedEmployee] = React.useState('');
+        const [weight, setWeight] = React.useState('');
+        const [error, setError] = React.useState('');
+        const [notification, setNotification] = React.useState(null);
+        const [activeProduction, setActiveProduction] = React.useState(null);
+        const [fornecedor, setFornecedor] = React.useState('');
+        const [pesoPiscicultura, setPesoPiscicultura] = React.useState('');
+        const [isLoading, setIsLoading] = React.useState(true);
+        const [isClosingModalOpen, setIsClosingModalOpen] = React.useState(false);
+        const [isSummaryModalOpen, setIsSummaryModalOpen] = React.useState(false);
+        const [closingData, setClosingData] = React.useState({ pesoFinalFile: '', peixeRefugo: '', fileRefugo: '' });
+        const [summaryData, setSummaryData] = React.useState(null);
+
+        const employeeList = React.useMemo(() => data ? Object.keys(data).sort() : [], [data]);
+
+        React.useEffect(() => {
+            if (employeeList.length > 0 && !selectedEmployee) {
+                setSelectedEmployee(employeeList[0]);
+            }
+        }, [employeeList, selectedEmployee]);
+        
+        React.useEffect(() => {
+            setIsLoading(true);
+            const q = window.firebase9.query(
+                window.firebase9.collection(db, "lotes_producao"),
+                window.firebase9.where("status", "==", "aberto"),
+                window.firebase9.limit(1)
+            );
+            const unsubscribe = window.firebase9.onSnapshot(q, (querySnapshot) => {
+                if (!querySnapshot.empty) {
+                    const doc = querySnapshot.docs[0];
+                    const activeProdData = { id: doc.id, ...doc.data() };
+                    setActiveProduction(activeProdData);
+                    setPendingEntries(activeProdData.pendingEntries || {});
+                } else {
+                    setActiveProduction(null);
+                    setProductionEvents([]);
+                    setPendingEntries({});
+                    setIsLoading(false);
+                }
+            }, (err) => {
+                console.error("Erro ao ouvir lote ativo:", err);
+                setError("Falha ao carregar o estado da produção.");
+                setIsLoading(false);
+            });
+            return () => unsubscribe();
+        }, []);
+
+        React.useEffect(() => {
+            if (!activeProduction) {
+                setProductionEvents([]);
+                setIsLoading(false);
+                return;
+            }
+            setIsLoading(true);
+            const eventsQuery = window.firebase9.query(
+                window.firebase9.collection(db, "eventos_producao"),
+                window.firebase9.where("loteId", "==", activeProduction.id),
+                window.firebase9.orderBy("timestamp", "asc")
+            );
+            const unsubscribeEvents = window.firebase9.onSnapshot(eventsQuery, (snapshot) => {
+                const eventsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                setProductionEvents(eventsData);
+                setIsLoading(false);
+            }, (err) => {
+                console.error("Erro ao buscar eventos de produção:", err);
+                setError("Não foi possível carregar os eventos de produção.");
+                setIsLoading(false);
+            });
+            return () => unsubscribeEvents();
+        }, [activeProduction]);
+
+        const showNotification = (message, type = 'success') => {
+            setNotification({ message, type });
+            setTimeout(() => setNotification(null), 4000);
+        };
+
+        const handleStartProduction = async () => {
+            const parsedPeso = safeParseFloat(pesoPiscicultura);
+            if (!fornecedor || parsedPeso <= 0) {
+                setError("Preencha o fornecedor e um peso válido para iniciar.");
+                return;
+            }
+            setIsLoading(true);
+            const newProductionBatch = {
+                fornecedor,
+                pesoPiscicultura: parsedPeso,
+                status: 'aberto',
+                dataIniciado: new Date(),
+                iniciadoPor: user.email,
+                pendingEntries: {},
+            };
+            try {
+                await window.firebase9.addDoc(window.firebase9.collection(db, "lotes_producao"), newProductionBatch);
+                setFornecedor('');
+                setPesoPiscicultura('');
+                setError('');
+                showNotification("Novo lote de produção iniciado com sucesso!");
+            } catch (err) {
+                console.error("Erro ao iniciar produção:", err);
+                setError("Não foi possível iniciar a produção. Tente novamente.");
+            } finally {
+                setIsLoading(false);
+            }
+        };
+        
+        const createProductionEvent = async (type, peso, dadosExtras = {}) => {
+            if (!selectedEmployee) {
+                setError("Selecione um colaborador.");
+                return;
+            }
+            const eventData = {
+                loteId: activeProduction.id,
+                colaborador: selectedEmployee,
+                tipo: type,
+                peso: peso,
+                timestamp: new Date(),
+                ...dadosExtras
+            };
+            await window.firebase9.addDoc(window.firebase9.collection(db, "eventos_producao"), eventData);
+        };
+
+        const handleRegisterFish = async () => {
+            const parsedWeight = safeParseFloat(weight);
+            if (!selectedEmployee || parsedWeight <= 0) {
+                setError("Selecione um colaborador e insira um peso válido.");
+                return;
+            }
+            if (pendingEntries[selectedEmployee]) {
+                setError(`Já existe uma entrada de peixe pendente para ${selectedEmployee}. Registre a saída do filé.`);
+                return;
+            }
+            
+            const newPendingEntries = { ...pendingEntries, [selectedEmployee]: { peixeRecebido: parsedWeight, timestampEntrada: new Date() } };
+            const loteDocRef = window.firebase9.doc(db, "lotes_producao", activeProduction.id);
+            
+            try {
+                await window.firebase9.updateDoc(loteDocRef, { pendingEntries: newPendingEntries });
+                await createProductionEvent('ENTRADA_PEIXE', parsedWeight);
+                showNotification(`Entrada de ${formatNumberWithSeparators(parsedWeight)}kg de peixe registrada para ${selectedEmployee}.`, 'info');
+                setWeight('');
+                setError('');
+            } catch (err) {
+                console.error("Erro ao registrar entrada de peixe:", err);
+                setError("Falha ao registrar a entrada. Tente novamente.");
+            }
+        };
+
+        const handleRegisterFilet = async () => {
+            const fileProduzidoBruto = safeParseFloat(weight);
+            if (!selectedEmployee || fileProduzidoBruto <= 0) {
+                setError("Selecione um colaborador e insira um peso de filé válido.");
+                return;
+            }
+            if (!pendingEntries[selectedEmployee]) {
+                setError(`Nenhuma entrada de peixe pendente para ${selectedEmployee}. Registre a entrada primeiro.`);
+                return;
+            }
+
+            const { peixeRecebido, timestampEntrada } = pendingEntries[selectedEmployee];
+            const rendimento = peixeRecebido > 0 ? (fileProduzidoBruto / peixeRecebido) * 100 : 0;
+            const newPendingEntries = { ...pendingEntries };
+            delete newPendingEntries[selectedEmployee];
+            
+            const loteDocRef = window.firebase9.doc(db, "lotes_producao", activeProduction.id);
+            
+            try {
+                await window.firebase9.updateDoc(loteDocRef, { pendingEntries: newPendingEntries });
+                await createProductionEvent('SAIDA_FILE', fileProduzidoBruto, { peixeRecebido, timestampEntrada, rendimento });
+                showNotification(`Produção de ${selectedEmployee} finalizada! Rendimento: ${rendimento.toFixed(2)}%`);
+                setWeight('');
+                setError('');
+            } catch (err) {
+                console.error("Erro ao registrar saída de filé:", err);
+                setError("Falha ao finalizar a produção. Tente novamente.");
+            }
+        };
+
+        const handleRegisterRefugo = async (type) => {
+            const refugoValue = safeParseFloat(weight);
+            if (refugoValue <= 0) {
+                setError("Insira um valor de refugo válido.");
+                return;
+            }
+            try {
+                const eventType = type === 'peixe' ? 'REFUGO_PEIXE' : 'REFUGO_FILE';
+                await createProductionEvent(eventType, refugoValue);
+                showNotification(`Refugo de ${type} (${formatNumberWithSeparators(refugoValue)} kg) registrado com sucesso.`);
+                setWeight('');
+                setError('');
+            } catch (err) {
+                console.error(`Erro ao registrar refugo de ${type}:`, err);
+                setError("Falha ao registrar refugo. Tente novamente.");
+            }
+        };
+
+        const processedData = React.useMemo(() => {
+            const dataByColaborador = {};
+            
+            productionEvents.forEach(event => {
+                if (!dataByColaborador[event.colaborador]) {
+                    dataByColaborador[event.colaborador] = {
+                        events: [],
+                        totalPeixe: 0,
+                        totalFile: 0,
+                        totalRefugoPeixe: 0,
+                        totalRefugoFile: 0,
+                    };
+                }
+                const colabData = dataByColaborador[event.colaborador];
+                colabData.events.push(event);
+
+                switch(event.tipo) {
+                    case 'ENTRADA_PEIXE':
+                        colabData.totalPeixe += event.peso;
+                        break;
+                    case 'SAIDA_FILE':
+                        colabData.totalFile += event.peso;
+                        break;
+                    case 'REFUGO_PEIXE':
+                        colabData.totalRefugoPeixe += event.peso;
+                        break;
+                    case 'REFUGO_FILE':
+                        colabData.totalRefugoFile += event.peso;
+                        break;
+                }
+            });
+
+            Object.values(dataByColaborador).forEach(colab => {
+                const peixeLiquido = colab.totalPeixe - colab.totalRefugoPeixe;
+                const fileLiquido = colab.totalFile - colab.totalRefugoFile;
+                colab.rendimentoMedio = peixeLiquido > 0 ? (fileLiquido / peixeLiquido) * 100 : 0;
+            });
+
+            return dataByColaborador;
+        }, [productionEvents]);
+        
+        const grandTotal = React.useMemo(() => {
+            return Object.values(processedData).reduce((acc, colab) => {
+                acc.peixe += colab.totalPeixe;
+                acc.file += colab.totalFile;
+                acc.refugoPeixe += colab.totalRefugoPeixe;
+                acc.refugoFile += colab.totalRefugoFile;
+                return acc;
+            }, { peixe: 0, file: 0, refugoPeixe: 0, refugoFile: 0 });
+        }, [processedData]);
+
+        const grandTotalRendimento = React.useMemo(() => {
+            const peixeLiquido = grandTotal.peixe - grandTotal.refugoPeixe;
+            const fileLiquido = grandTotal.file - grandTotal.refugoFile;
+            return peixeLiquido > 0 ? (fileLiquido / peixeLiquido) * 100 : 0;
+        }, [grandTotal]);
+
+
+        if (isLoading) return <div className="text-center p-10">Carregando dados da produção...</div>;
+
+        return (
+            <div className="bg-white p-6 md:p-8 rounded-lg shadow-md space-y-8">
+                <h2 className="text-3xl font-bold text-gray-800 text-center">Registro de Produção Diária</h2>
+                
+                {notification && <div className={`p-4 rounded-md ${notification.type === 'success' ? 'bg-green-100 border-green-500 text-green-700' : 'bg-blue-100 border-blue-500 text-blue-700'} border-l-4`} role="alert"><p>{notification.message}</p></div>}
+                {error && <div className="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 rounded-md" role="alert"><p>{error}</p></div>}
+                
+                {!activeProduction ? (
+                    <div className="space-y-4 p-6 bg-gray-50 rounded-lg shadow-inner">
+                        <h3 className="text-xl font-semibold text-gray-700">Iniciar Nova Produção</h3>
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700">Fornecedor</label>
+                            <input type="text" value={fornecedor} onChange={(e) => setFornecedor(e.target.value)} placeholder="Nome do Fornecedor" className="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm" />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700">Peso da Piscicultura (Kg)</label>
+                            <input type="text" value={pesoPiscicultura} onChange={(e) => setPesoPiscicultura(e.target.value)} placeholder="Ex: 550,75" className="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm" />
+                        </div>
+                        <button onClick={handleStartProduction} disabled={isLoading} className="w-full bg-green-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-green-700 transition disabled:bg-gray-400">
+                            {isLoading ? 'Iniciando...' : 'Iniciar Produção'}
+                        </button>
+                    </div>
+                ) : (
+                <>
+                    <div className="p-4 bg-blue-100 border border-blue-300 rounded-lg shadow-md">
+                        <div className="flex flex-col sm:flex-row justify-between items-center gap-4">
+                            <div>
+                                <h3 className="text-xl font-bold text-blue-800">Produção Ativa</h3>
+                                <p className="text-blue-700">Fornecedor: <span className="font-semibold">{activeProduction.fornecedor}</span></p>
+                                <p className="text-blue-700">Peso Inicial: <span className="font-semibold">{formatNumberWithSeparators(activeProduction.pesoPiscicultura)} Kg</span></p>
+                                <p className="text-blue-700 text-sm">Iniciada por: {activeProduction.iniciadoPor} em {formatDateTime(activeProduction.dataIniciado)}</p>
+                            </div>
+                            <button onClick={() => setIsClosingModalOpen(true)} className="bg-red-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-red-700 transition w-full sm:w-auto">Fechar Produção</button>
+                        </div>
+                    </div>
+
+                    <div className="grid md:grid-cols-2 gap-8 items-start">
+                        <div className="space-y-4 p-6 bg-gray-50 rounded-lg shadow-inner">
+                            <h3 className="text-xl font-semibold text-gray-700">Nova Pesagem</h3>
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700">Colaborador</label>
+                                <select value={selectedEmployee} onChange={(e) => setSelectedEmployee(e.target.value)} className="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm">
+                                    {employeeList.map(emp => <option key={emp} value={emp}>{emp}</option>)}
+                                </select>
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700">Peso (Kg)</label>
+                                <input type="text" value={weight} onChange={(e) => setWeight(e.target.value)} placeholder="Peso do Peixe, Filé ou Refugo" className="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm" />
+                            </div>
+                            <div className="grid grid-cols-2 gap-4">
+                                <button onClick={handleRegisterFish} className="bg-blue-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-blue-700 transition">📥 Registrar Entrada de Peixe</button>
+                                <button onClick={handleRegisterFilet} className="bg-green-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-green-700 transition">📤 Registrar Saída de Filé</button>
+                            </div>
+                             <div className="grid grid-cols-2 gap-4">
+                                <button onClick={() => handleRegisterRefugo('peixe')} className="bg-yellow-500 text-white font-bold py-3 px-4 rounded-lg hover:bg-yellow-600 transition">🐟 Registrar Refugo de Peixe</button>
+                                <button onClick={() => handleRegisterRefugo('file')} className="bg-orange-500 text-white font-bold py-3 px-4 rounded-lg hover:bg-orange-600 transition">🔪 Registrar Refugo de Filé</button>
+                            </div>
+                        </div>
+
+                        <div className="space-y-2 p-6 bg-yellow-50 rounded-lg shadow-inner">
+                             <h3 className="text-xl font-semibold text-gray-700 mb-3">Entradas Pendentes</h3>
+                             {Object.keys(pendingEntries).length > 0 ? (
+                                 <ul className="list-disc list-inside">
+                                     {Object.entries(pendingEntries).map(([employee, entry]) => (
+                                         <li key={employee} className="text-gray-800">
+                                             <span className="font-bold">{employee}:</span> {formatNumberWithSeparators(entry.peixeRecebido)} kg de peixe aguardando saída do filé.
+                                         </li>
+                                     ))}
+                                 </ul>
+                             ) : (
+                                 <p className="text-gray-500">Nenhuma entrada de peixe pendente.</p>
+                             )}
+                        </div>
+                    </div>
+
+                    <div>
+                        <h3 className="text-xl font-semibold text-gray-800 mb-4">Produção do Lote Atual</h3>
+                        <div className="overflow-x-auto">
+                            <table className="w-full text-left border-collapse">
+                                <thead className="bg-gray-200">
+                                    <tr>
+                                        <th className="p-3 border font-semibold">Colaborador</th>
+                                        <th className="p-3 border font-semibold">Ação</th>
+                                        <th className="p-3 border font-semibold text-center">Horário</th>
+                                        <th className="p-3 border font-semibold text-right">Peso (Kg)</th>
+                                        <th className="p-3 border font-semibold text-right">Rendimento Parcial (%)</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {Object.entries(processedData).map(([colaborador, data]) => (
+                                        <React.Fragment key={colaborador}>
+                                            {data.events.map(event => {
+                                                let acao, cor;
+                                                switch(event.tipo) {
+                                                    case 'ENTRADA_PEIXE': acao = 'Entrada Peixe'; cor = 'text-blue-600'; break;
+                                                    case 'SAIDA_FILE': acao = 'Saída Filé'; cor = 'text-green-600'; break;
+                                                    case 'REFUGO_PEIXE': acao = 'Refugo Peixe'; cor = 'text-red-600'; break;
+                                                    case 'REFUGO_FILE': acao = 'Refugo Filé'; cor = 'text-orange-600'; break;
+                                                    default: acao = 'N/A';
+                                                }
+                                                return (
+                                                    <tr key={event.id} className="hover:bg-gray-50 border-t">
+                                                        <td className="p-2 border-b">{event.colaborador}</td>
+                                                        <td className={`p-2 border-b font-medium ${cor}`}>{acao}</td>
+                                                        <td className="p-2 border-b text-center">{formatTime(event.timestamp)}</td>
+                                                        <td className="p-2 border-b text-right">{formatNumberWithSeparators(event.peso)}</td>
+                                                        <td className="p-2 border-b text-right font-bold text-indigo-600">
+                                                            {event.tipo === 'SAIDA_FILE' ? `${formatNumberWithSeparators(event.rendimento)}%` : '-'}
+                                                        </td>
+                                                    </tr>
+                                                )
+                                            })}
+                                            <tr className="bg-gray-100 font-bold">
+                                                <td className="p-2 border-y-2 border-gray-300" colSpan="2">Subtotal ({colaborador})</td>
+                                                <td className="p-2 border-y-2 border-gray-300 text-right">Peixe: {formatNumberWithSeparators(data.totalPeixe)}</td>
+                                                <td className="p-2 border-y-2 border-gray-300 text-right">Filé: {formatNumberWithSeparators(data.totalFile)}</td>
+                                                <td className="p-2 border-y-2 border-gray-300 text-right">Rend: {formatNumberWithSeparators(data.rendimentoMedio)}%</td>
+                                            </tr>
+                                        </React.Fragment>
+                                    ))}
+                                </tbody>
+                                <tfoot className="bg-gray-800 text-white font-bold">
+                                    <tr>
+                                        <td className="p-3 border-t-4 border-gray-500" colSpan="2">TOTAL GERAL DO LOTE</td>
+                                        <td className="p-3 border-t-4 border-gray-500 text-right">Peixe: {formatNumberWithSeparators(grandTotal.peixe)}</td>
+                                        <td className="p-3 border-t-4 border-gray-500 text-right">Filé: {formatNumberWithSeparators(grandTotal.file)}</td>
+                                        <td className="p-3 border-t-4 border-gray-500 text-right">Rend: {formatNumberWithSeparators(grandTotalRendimento)}%</td>
+                                    </tr>
+                                    <tr className="bg-gray-700 text-sm">
+                                        <td className="p-2" colSpan="2">REFUGO TOTAL</td>
+                                        <td className="p-2 text-right">Peixe: {formatNumberWithSeparators(grandTotal.refugoPeixe)}</td>
+                                        <td className="p-2 text-right">Filé: {formatNumberWithSeparators(grandTotal.refugoFile)}</td>
+                                        <td className="p-2"></td>
+                                    </tr>
+                                </tfoot>
+                            </table>
+                        </div>
+                    </div>
+                </>
+                )}
+            </div>
+        );
+    }
+    
+    function MonthlyDashboard({ data, lineColors }) {
+        const [selectedYear, setSelectedYear] = React.useState(new Date().getFullYear());
+        const [selectedMonth, setSelectedMonth] = React.useState('all');
+        const [selectedWeek, setSelectedWeek] = React.useState('all');
+        const [selectedFiletador, setSelectedFiletador] = React.useState('Todos');
+        const [groupBy, setGroupBy] = React.useState('week');
+
+        const { availableYears, availableMonthsInYear } = React.useMemo(() => {
+            if (!data) return { availableYears: [], availableMonthsInYear: [] };
+            const yearSet = new Set();
+            const monthSet = new Set();
+            Object.values(data).forEach(emp => {
+                emp.daily.forEach(day => {
+                    const date = parseDate(day.date);
+                    if (date) {
+                        const year = date.getUTCFullYear();
+                        yearSet.add(year);
+                        if (year === selectedYear) {
+                            monthSet.add(date.getUTCMonth());
+                        }
+                    }
+                });
+            });
+            if (!yearSet.has(selectedYear)) {
+                yearSet.add(selectedYear);
+            }
+            return { 
+                availableYears: [...yearSet].sort((a, b) => b - a), 
+                availableMonthsInYear: [...monthSet].sort((a, b) => a - b) 
+            };
+        }, [data, selectedYear]);
+
+        React.useEffect(() => {
+            setSelectedMonth('all');
+        }, [selectedYear]);
+        
+        const dataParaDashboard = React.useMemo(() => {
+            if (!data) return null;
+            const filtered = {};
+            Object.keys(data).forEach(name => {
+                const entries = data[name].daily.filter(day => {
+                    const date = parseDate(day.date);
+                    if (!date) return false;
+                    const yearMatch = date.getUTCFullYear() === selectedYear;
+                    const monthMatch = selectedMonth === 'all' || date.getUTCMonth() === selectedMonth;
+                    return yearMatch && monthMatch;
+                });
+                if (entries.length > 0) {
+                    filtered[name] = { ...data[name], daily: entries };
+                }
+            });
+            return filtered;
+        }, [data, selectedYear, selectedMonth]);
+
+        const filetadoresDoPeriodo = ['Todos', ...Object.keys(dataParaDashboard || {}).sort()];
+        
+        const totalSummary = React.useMemo(() => {
+            let relevantEntries = Object.values(dataParaDashboard || {}).flatMap(emp => emp.daily);
+            if (selectedFiletador !== 'Todos' && dataParaDashboard[selectedFiletador]) {
+                relevantEntries = dataParaDashboard[selectedFiletador].daily;
+            }
+            if (selectedWeek !== 'all') {
+                relevantEntries = relevantEntries.filter(d => d.week === selectedWeek);
+            }
+            return relevantEntries.reduce((acc, day) => {
+                acc.peixe += day.peixe || 0;
+                acc.file += day.file || 0;
+                return acc;
+            }, { peixe: 0, file: 0 });
+        }, [dataParaDashboard, selectedFiletador, selectedWeek]);
+        
+        const diasTrabalhados = React.useMemo(() => {
+            if (!dataParaDashboard) return 0;
+            let relevantEntries = Object.values(dataParaDashboard).flatMap(emp => emp.daily);
+            if (selectedFiletador !== 'Todos' && dataParaDashboard[selectedFiletador]) {
+                relevantEntries = dataParaDashboard[selectedFiletador].daily;
+            }
+            if (selectedWeek !== 'all') {
+                relevantEntries = relevantEntries.filter(d => d.week === selectedWeek);
+            }
+            const uniqueDates = new Set(relevantEntries.map(d => d.date));
+            return uniqueDates.size;
+        }, [dataParaDashboard, selectedFiletador, selectedWeek]);
+
+        const avgRend = totalSummary.peixe > 0 ? ((totalSummary.file / totalSummary.peixe) * 100).toFixed(2) : '0.00';
+        
+        const topPerformer = React.useMemo(() => {
+            if (!dataParaDashboard) return { name: '', rend: 0 };
+            return Object.entries(dataParaDashboard)
+                .map(([name, empData]) => {
+                    const totalFile = empData.daily.reduce((sum, d) => sum + d.file, 0);
+                    const totalPeixe = empData.daily.reduce((sum, d) => sum + d.peixe, 0);
+                    const rend = totalPeixe > 0 ? (totalFile / totalPeixe) * 100 : 0;
+                    return { name, rend };
+                })
+                .reduce((top, current) => (current.rend > top.rend ? current : top), { name: '', rend: 0 });
+        }, [dataParaDashboard]);
+
+        const productionChartData = React.useMemo(() => {
+            if (!dataParaDashboard) return [];
+            const relevantEntries = Object.entries(dataParaDashboard)
+                .filter(([name, _]) => selectedFiletador === 'Todos' || name === selectedFiletador)
+                .flatMap(([_, empData]) => empData.daily);
+
+            if (relevantEntries.length === 0) return [];
+
+            const groupedData = relevantEntries.reduce((acc, entry) => {
+                let key;
+                let dateObj = parseDate(entry.date);
+                if (!dateObj) return acc;
+
+                switch (groupBy) {
+                    case 'day': key = entry.date; break;
+                    case 'week': key = entry.week; break;
+                    case 'month': key = monthNames[entry.month]; break;
+                    default: return acc;
+                }
+
+                if (!acc[key]) {
+                    acc[key] = {
+                        peixe: 0, file: 0, days: new Set(),
+                        dateObj: dateObj,
+                        weekNumber: groupBy === 'week' ? parseInt(entry.week.split(' ')[1]) : 0,
+                        monthIndex: groupBy === 'month' ? entry.month : 0,
+                    };
+                }
+                acc[key].peixe += entry.peixe;
+                acc[key].file += entry.file;
+                acc[key].days.add(entry.date);
+                return acc;
+            }, {});
+
+            let chartData = Object.entries(groupedData).map(([key, totals]) => {
+                const dayCount = totals.days.size;
+                return {
+                    name: groupBy === 'day' ? key.slice(0, 5) : key,
+                    'Peixe Recebido (kg)': totals.peixe,
+                    'Filé Produzido (kg)': totals.file,
+                    'Média Diária Peixe (kg)': dayCount > 0 ? totals.peixe / dayCount : 0,
+                    dateObj: totals.dateObj,
+                    weekNumber: totals.weekNumber,
+                    monthIndex: totals.monthIndex,
+                };
+            });
+            
+            if (groupBy === 'day') chartData.sort((a, b) => a.dateObj - b.dateObj);
+            if (groupBy === 'week') chartData.sort((a, b) => a.weekNumber - b.weekNumber);
+            if (groupBy === 'month') chartData.sort((a, b) => a.monthIndex - b.monthIndex);
+
+            return chartData;
+        }, [dataParaDashboard, selectedFiletador, groupBy]);
+
+        const availableWeeks = React.useMemo(() => {
+            if (!dataParaDashboard) return [];
+            const weekSet = new Set();
+            Object.values(dataParaDashboard).forEach(emp => {
+                emp.daily.forEach(day => weekSet.add(day.week));
+            });
+            return [...weekSet].sort((a, b) => parseInt(a.split(' ')[1]) - parseInt(b.split(' ')[1]));
+        }, [dataParaDashboard]);
+
+        const rendTrendData = React.useMemo(() => {
+            if (!dataParaDashboard) return [];
+            return availableWeeks.map(week => {
+                const weekData = { week };
+                Object.keys(dataParaDashboard)
+                    .filter(name => selectedFiletador === 'Todos' || name === selectedFiletador)
+                    .forEach(name => {
+                        const emp = dataParaDashboard[name];
+                        const weekEntries = emp.daily.filter(d => d.week === week);
+                        if (weekEntries.length > 0) {
+                            const totalFile = weekEntries.reduce((sum, d) => sum + d.file, 0);
+                            const totalPeixe = weekEntries.reduce((sum, d) => sum + d.peixe, 0);
+                            weekData[name] = parseFloat((totalPeixe > 0 ? (totalFile / totalPeixe * 100) : 0).toFixed(2));
+                        } else {
+                            weekData[name] = null;
+                        }
+                    });
+                return weekData;
+            });
+        }, [dataParaDashboard, availableWeeks, selectedFiletador]);
+        
+        const getTitle = () => {
+            const filetadorText = selectedFiletador === 'Todos' ? 'Geral' : selectedFiletador;
+            const yearText = selectedYear;
+            const monthText = selectedMonth === 'all' ? '' : ` - ${monthNames[selectedMonth]}`;
+            const weekText = selectedWeek === 'all' || selectedMonth === 'all' ? '' : ` - ${selectedWeek}`;
+            return `Resumo ${yearText}${monthText}${weekText} (${filetadorText})`;
+        };
+
+        return (
+            <div className="space-y-6">
+                <div className="flex flex-wrap justify-center items-center gap-4 p-4 bg-white rounded-lg shadow">
+                    <select value={selectedYear} onChange={(e) => setSelectedYear(parseInt(e.target.value, 10))} className="p-2 border rounded-lg bg-white text-gray-700 shadow-sm focus:ring-2 focus:ring-blue-500">
+                        {availableYears.map(year => <option key={year} value={year}>{year}</option>)}
+                    </select>
+                    <select value={selectedMonth} onChange={(e) => setSelectedMonth(e.target.value === 'all' ? 'all' : parseInt(e.target.value, 10))} className="p-2 border rounded-lg bg-white text-gray-700 shadow-sm focus:ring-2 focus:ring-blue-500">
+                        <option value="all">Todos os Meses</option>
+                        {availableMonthsInYear.map(monthIndex => <option key={monthIndex} value={monthIndex}>{monthNames[monthIndex]}</option>)}
+                    </select>
+                    <select value={selectedWeek} onChange={(e) => setSelectedWeek(e.target.value)} className="p-2 border rounded-lg bg-white text-gray-700 shadow-sm focus:ring-2 focus:ring-blue-500" disabled={selectedMonth === 'all'}>
+                        <option value="all">Mês Inteiro</option>
+                        {availableWeeks.map(week => <option key={week} value={week}>{week}</option>)}
+                    </select>
+                     <select value={groupBy} onChange={(e) => setGroupBy(e.target.value)} className="p-2 border rounded-lg bg-white text-gray-700 shadow-sm focus:ring-2 focus:ring-blue-500">
+                        <option value="day">Agrupar por Dia</option>
+                        <option value="week">Agrupar por Semana</option>
+                        <option value="month" disabled={selectedMonth !== 'all'}>Agrupar por Mês</option>
+                    </select>
+                    <select value={selectedFiletador} onChange={(e) => setSelectedFiletador(e.target.value)} className="p-2 border rounded-lg bg-white text-gray-700 shadow-sm focus:ring-2 focus:ring-blue-500">
+                        {filetadoresDoPeriodo.map(f => <option key={f} value={f}>{f}</option>)}
+                    </select>
+                </div>
+                <div className="bg-white p-6 rounded-lg shadow-md">
+                    <h2 className="text-2xl font-semibold text-gray-800 mb-4">{getTitle()}</h2>
+                    <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4 text-center">
+                        <div className="p-4 bg-indigo-50 rounded-lg"><p className="text-lg font-medium text-indigo-800">Dias Trabalhados</p><p className="text-3xl font-bold text-indigo-600">{diasTrabalhados}</p></div>
+                        <div className="p-4 bg-blue-50 rounded-lg"><p className="text-lg font-medium text-blue-800">Peixe Recebido (Kg)</p><p className="text-3xl font-bold text-blue-600">{formatNumberWithSeparators(totalSummary.peixe)}</p></div>
+                        <div className="p-4 bg-green-50 rounded-lg"><p className="text-lg font-medium text-green-800">Filé Produzido (Kg)</p><p className="text-3xl font-bold text-green-600">{formatNumberWithSeparators(totalSummary.file)}</p></div>
+                        <div className="p-4 bg-yellow-50 rounded-lg"><p className="text-lg font-medium text-yellow-800">Rendimento Total (%)</p><p className="text-3xl font-bold text-yellow-600">{avgRend}%</p></div>
+                    </div>
+                    {topPerformer.name && <p className="mt-6 text-center text-lg text-gray-700"><span className="font-bold text-indigo-600">⭐ Destaque do Período:</span> {topPerformer.name} com <span className="font-semibold">{topPerformer.rend.toFixed(2)}%</span>!</p>}
+                </div>
+                <div className="grid lg:grid-cols-2 gap-6">
+                    <div className="bg-white p-6 rounded-lg shadow-md">
+                        <h2 className="text-2xl font-semibold text-gray-800 mb-4">Produção por Período (Kg)</h2>
+                        <Recharts.ResponsiveContainer width="100%" height={400}>
+                            <Recharts.ComposedChart data={productionChartData}>
+                                <Recharts.CartesianGrid strokeDasharray="3 3" />
+                                <Recharts.XAxis dataKey="name" />
+                                <Recharts.YAxis yAxisId="left" label={{ value: 'Produção Total (kg)', angle: -90, position: 'insideLeft' }} />
+                                <Recharts.YAxis yAxisId="right" orientation="right" label={{ value: 'Média Diária (kg)', angle: -90, position: 'insideRight' }}/>
+                                <Recharts.Tooltip formatter={(value) => `${formatNumberWithSeparators(value)} kg`} />
+                                <Recharts.Legend />
+                                <Recharts.Bar yAxisId="left" dataKey="Peixe Recebido (kg)" fill="#3b82f6" name="Peixe Recebido" />
+                                <Recharts.Bar yAxisId="left" dataKey="Filé Produzido (kg)" fill="#16a34a" name="Filé Produzido" />
+                                <Recharts.Line yAxisId="right" type="monotone" dataKey="Média Diária Peixe (kg)" stroke="#ff7300" strokeWidth={2} name="Média Diária de Peixe" />
+                            </Recharts.ComposedChart>
+                        </Recharts.ResponsiveContainer>
+                    </div>
+                    <div className="bg-white p-6 rounded-lg shadow-md">
+                        <h2 className="text-2xl font-semibold text-gray-800 mb-4">Tendência de Rendimento Semanal (%)</h2>
+                        <Recharts.ResponsiveContainer width="100%" height={400}>
+                            <Recharts.LineChart data={rendTrendData}>
+                                <Recharts.CartesianGrid strokeDasharray="3 3" />
+                                <Recharts.XAxis dataKey="week" />
+                                <Recharts.YAxis domain={['dataMin - 2', 'dataMax + 2']} tickFormatter={(tick) => `${tick}%`} />
+                                <Recharts.Tooltip formatter={(value) => `${value ? value.toFixed(2) : 'N/A'}%`} />
+                                <Recharts.Legend />
+                                {Object.keys(dataParaDashboard || {}).filter(name => selectedFiletador === 'Todos' || name === selectedFiletador).map(name => <Recharts.Line key={name} type="monotone" dataKey={name} stroke={lineColors[name]} strokeWidth={2} name={name} connectNulls={false} />)}
+                            </Recharts.LineChart>
+                        </Recharts.ResponsiveContainer>
+                    </div>
+                </div>
+                <div className="space-y-4">
+                    {Object.keys(dataParaDashboard || {}).filter(name => selectedFiletador === 'Todos' || name === selectedFiletador).length > 0 ? (
+                        Object.entries(dataParaDashboard)
+                            .filter(([name, _]) => selectedFiletador === 'Todos' || name === selectedFiletador)
+                            .map(([name, employeePeriodData]) => (
+                                <div key={name} className="bg-white p-6 rounded-lg shadow-md">
+                                    <h3 className="text-xl font-bold text-gray-700 mb-3">{name}</h3>
+                                    <div className="overflow-x-auto">
+                                        <table className="w-full text-left border-collapse">
+                                            <thead className="bg-gray-200">
+                                                <tr>
+                                                    <th className="p-3 border font-semibold">Data</th>
+                                                    <th className="p-3 border font-semibold">Peixe (Kg)</th>
+                                                    <th className="p-3 border font-semibold">Filé (Kg)</th>
+                                                    <th className="p-3 border font-semibold">Rendimento (%)</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {employeePeriodData.daily
+                                                    .filter(d => (selectedWeek === 'all' || d.week === selectedWeek))
+                                                    .map((day, index) => (
+                                                        <tr key={index} className="hover:bg-gray-50">
+                                                            <td className="p-2 border">{day.date}</td>
+                                                            <td className="p-2 border">{formatNumberWithSeparators(day.peixe)}</td>
+                                                            <td className="p-2 border">{formatNumberWithSeparators(day.file)}</td>
+                                                            <td className="p-2 border text-blue-600 font-medium">{((day.peixe > 0 ? day.file / day.peixe : 0) * 100).toFixed(2)}%</td>
+                                                        </tr>
+                                                    ))}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            ))
+                    ) : (
+                        <div className="bg-white p-6 rounded-lg shadow-md text-center text-gray-500"><p>Nenhum dado encontrado para os filtros selecionados.</p></div>
+                    )}
+                </div>
+            </div>
+        );
+    }
+
+    function DailyEvaluationPage({ data }) {
+        const today = new Date().toISOString().split('T')[0];
+        const [inputs, setInputs] = React.useState({ selectedDate: today, fornecedor: '', lote: '', pesoPiscicultura: '', pesoMoradaFish: '', refugo: '', pesoFinalFileManual: '' });
+        const [isSaving, setIsSaving] = React.useState(false);
+        const rendimentoTeorico = React.useMemo(() => { if (!data) return 42; let totalFile = 0; let totalPeixe = 0; Object.values(data).forEach(emp => { totalFile += emp.daily.reduce((sum, day) => sum + day.file, 0); totalPeixe += emp.daily.reduce((sum, day) => sum + day.peixe, 0); }); return totalPeixe > 0 ? (totalFile / totalPeixe) * 100 : 42; }, [data]);
+        const handleInputChange = (e) => { const { name, value } = e.target; setInputs(prev => ({ ...prev, [name]: value })); };
+        const dailyData = React.useMemo(() => { if(!data || !inputs.selectedDate) return { peixeRecebido: 0, pesoFinalFiletador: 0 }; const targetDate = formatDate(new Date(inputs.selectedDate + 'T00:00:00Z')); let totalPeixe = 0; let totalFile = 0; Object.values(data).forEach(emp => { emp.daily.forEach(day => { if (day.date === targetDate) { totalPeixe += day.peixe; totalFile += day.file; } }); }); return { peixeRecebido: totalPeixe, pesoFinalFiletador: totalFile }; }, [data, inputs.selectedDate]);
+        const weekDay = new Date(inputs.selectedDate + 'T00:00:00Z').toLocaleDateString('pt-BR', { weekday: 'long', timeZone: 'UTC' });
+        const pesoPiscicultura = safeParseFloat(inputs.pesoPiscicultura);
+        const pesoMoradaFish = safeParseFloat(inputs.pesoMoradaFish);
+        const refugo = safeParseFloat(inputs.refugo);
+        const pesoFinalFileManual = safeParseFloat(inputs.pesoFinalFileManual);
+        const entradaFiletagem = dailyData.peixeRecebido;
+        const pesoFinalFiletador = dailyData.pesoFinalFiletador;
+        const difPisciMf = pesoMoradaFish > 0 ? (1 - (pesoPiscicultura / pesoMoradaFish)) : 0;
+        const peixeParaFile = pesoMoradaFish > 0 ? pesoMoradaFish - refugo : 0;
+        const difFiletagemEntrada = entradaFiletagem - peixeParaFile;
+        const difPercentual = peixeParaFile > 0 ? (difFiletagemEntrada / peixeParaFile) : 0;
+        const rendimentoGeral = peixeParaFile > 0 ? (pesoFinalFileManual / peixeParaFile) : 0;
+        const rendimentoFiletadores = entradaFiletagem > 0 ? (pesoFinalFiletador / entradaFiletagem) : 0;
+        const rendimentoRefino = pesoFinalFiletador > 0 ? (pesoFinalFileManual / pesoFinalFiletador) : 0;
+        const difTeoricoReal = ((rendimentoGeral * 100) - rendimentoTeorico);
+
+        const handleSaveEvaluation = () => {
+            setIsSaving(true);
+            const evaluationData = { selectedDate: inputs.selectedDate, fornecedor: inputs.fornecedor, lote: inputs.lote, pesoPiscicultura: pesoPiscicultura, pesoMoradaFish: pesoMoradaFish, refugo: refugo, pesoFinalFileManual: pesoFinalFileManual, dataCriacao: new Date().toISOString(), entradaFiletagem: entradaFiletagem, pesoFinalFiletador: pesoFinalFiletador, difPisciMf: difPisciMf, peixeParaFile: peixeParaFile, difFiletagemEntrada: difFiletagemEntrada, difPercentual: difPercentual, rendimentoGeral: rendimentoGeral, rendimentoFiletadores: rendimentoFiletadores, rendimentoRefino: rendimentoRefino, rendimentoTeorico: rendimentoTeorico, difTeoricoReal: difTeoricoReal };
+            window.firebase9.addDoc(window.firebase9.collection(db, "avaliacoes"), evaluationData)
+                .then(() => { 
+                    console.log(`Avaliação de ${inputs.selectedDate} salva com sucesso!`);
+                   })
+                .catch((error) => { console.error("Erro ao adicionar documento: ", error); })
+                .finally(() => { setIsSaving(false); });
+        };
+
+        const ResultCard = ({ title, value, unit = '' }) => ( <div className="bg-gray-100 p-3 rounded-lg"><p className="text-sm font-medium text-gray-600">{title}</p><p className="text-lg font-bold text-gray-900">{value}{unit}</p></div> );
+
+        return (
+            <div className="bg-white p-6 rounded-lg shadow-md">
+                <h2 className="text-3xl font-bold text-gray-800 mb-6 text-center">Avaliação Diária da Empresa</h2>
+                <div className="grid md:grid-cols-2 gap-8">
+                    <div className="space-y-4">
+                        <h3 className="text-xl font-semibold text-gray-700 border-b pb-2">Entradas Manuais</h3>
+                        <div><label className="block text-sm font-medium text-gray-700">Data da Avaliação</label><input type="date" name="selectedDate" value={inputs.selectedDate} onChange={handleInputChange} className="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm"/></div>
+                        <div><label className="block text-sm font-medium text-gray-700">Fornecedor</label><input type="text" name="fornecedor" value={inputs.fornecedor} onChange={handleInputChange} className="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm"/></div>
+                        <div><label className="block text-sm font-medium text-gray-700">Lote do Peixe</label><input type="text" name="lote" value={inputs.lote} onChange={handleInputChange} className="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm"/></div>
+                        <div><label className="block text-sm font-medium text-gray-700">Peso Bruto Piscicultura (Kg)</label><input type="text" name="pesoPiscicultura" value={inputs.pesoPiscicultura} onChange={handleInputChange} className="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm"/></div>
+                        <div><label className="block text-sm font-medium text-gray-700">Peso Bruto Morada Fish (Kg)</label><input type="text" name="pesoMoradaFish" value={inputs.pesoMoradaFish} onChange={handleInputChange} className="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm"/></div>
+                        <div><label className="block text-sm font-medium text-gray-700">Refugo Tilápia (Kg)</label><input type="text" name="refugo" value={inputs.refugo} onChange={handleInputChange} className="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm"/></div>
+                        <div><label className="block text-sm font-medium text-gray-700">Peso Final Filé (Kg)</label><input type="text" name="pesoFinalFileManual" value={inputs.pesoFinalFileManual} onChange={handleInputChange} className="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm"/></div>
+                    </div>
+                    <div className="space-y-4">
+                        <h3 className="text-xl font-semibold text-gray-700 border-b pb-2">Resultados e KPIs</h3>
+                        <ResultCard title="Dia da Semana" value={weekDay} />
+                        <ResultCard title="Entrada Filetagem (Kg)" value={formatNumberWithSeparators(entradaFiletagem)} unit=" kg" />
+                        <ResultCard title="Peso Final Filetador (Kg)" value={formatNumberWithSeparators(pesoFinalFiletador)} unit=" kg" />
+                        <ResultCard title="Diferença (%) (MF - Pisci.)" value={(difPisciMf * 100).toFixed(2)} unit=" %" />
+                        <ResultCard title="Peixe P/ Filé (Kg)" value={formatNumberWithSeparators(peixeParaFile)} unit=" kg" />
+                        <ResultCard title="Diferença (Kg) Filetagem - Entrada" value={formatNumberWithSeparators(difFiletagemEntrada)} unit=" kg" />
+                        <ResultCard title="Dif. (%)" value={(difPercentual * 100).toFixed(2)} unit=" %" />
+                        <ResultCard title="Rendimento Filetadores (%)" value={(rendimentoFiletadores * 100).toFixed(2)} unit=" %" />
+                        <ResultCard title="Rendimento do Refino (%)" value={(rendimentoRefino * 100).toFixed(2)} unit=" %" />
+                        <ResultCard title="Rendimento Geral (%)" value={(rendimentoGeral * 100).toFixed(2)} unit=" %" />
+                        <ResultCard title="Rendimento Teórico (Base Histórica)" value={rendimentoTeorico.toFixed(2)} unit=" %" />
+                        <ResultCard title="Dif. Teórico - Real" value={difTeoricoReal.toFixed(2)} unit=" %" />
+                    </div>
+                </div>
+                <div className="mt-8 text-center">
+                    <button onClick={handleSaveEvaluation} disabled={isSaving} className="bg-green-600 text-white font-bold py-3 px-8 rounded-lg hover:bg-green-700 transition shadow-lg disabled:bg-gray-400">
+                        {isSaving ? 'Salvando...' : 'Salvar Avaliação'}
+                    </button>
+                </div>
+            </div>
+        );
+    }
+
+    function EditModal({ item, onClose, onSave, isSaving }) {
+        if (!item) return null;
+
+        const [formData, setFormData] = React.useState(item);
+
+        const handleChange = (e) => {
+            const { name, value } = e.target;
+            setFormData(prev => ({ ...prev, [name]: value }));
+        };
+
+        const handleSaveClick = () => {
+            const dataToSave = {
+                ...formData,
+                pesoPiscicultura: safeParseFloat(formData.pesoPiscicultura),
+                pesoMoradaFish: safeParseFloat(formData.pesoMoradaFish),
+                refugo: safeParseFloat(formData.refugo),
+                pesoFinalFileManual: safeParseFloat(formData.pesoFinalFileManual),
+            };
+            onSave(dataToSave);
+        };
+
+        return (
+            <div className="fixed inset-0 bg-black bg-opacity-60 flex justify-center items-center z-50">
+                <div className="bg-white p-6 rounded-lg shadow-xl max-w-2xl w-full mx-4 space-y-4">
+                    <h3 className="text-2xl font-bold text-gray-800">Editar Lançamento</h3>
+                    
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-h-[70vh] overflow-y-auto p-2">
+                        <div className="space-y-3">
+                            <div><label className="block text-sm font-medium text-gray-700">Data da Avaliação</label><input type="date" name="selectedDate" value={formData.selectedDate} className="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm bg-gray-100" disabled/></div>
+                            <div><label className="block text-sm font-medium text-gray-700">Fornecedor</label><input type="text" name="fornecedor" value={formData.fornecedor} onChange={handleChange} className="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm"/></div>
+                            <div><label className="block text-sm font-medium text-gray-700">Lote do Peixe</label><input type="text" name="lote" value={formData.lote} onChange={handleChange} className="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm"/></div>
+                        </div>
+                         <div className="space-y-3">
+                            <div><label className="block text-sm font-medium text-gray-700">Peso Bruto Piscicultura (Kg)</label><input type="text" name="pesoPiscicultura" value={formData.pesoPiscicultura} onChange={handleChange} className="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm"/></div>
+                            <div><label className="block text-sm font-medium text-gray-700">Peso Bruto Morada Fish (Kg)</label><input type="text" name="pesoMoradaFish" value={formData.pesoMoradaFish} onChange={handleChange} className="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm"/></div>
+                            <div><label className="block text-sm font-medium text-gray-700">Refugo Tilápia (Kg)</label><input type="text" name="refugo" value={formData.refugo} onChange={handleChange} className="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm"/></div>
+                            <div><label className="block text-sm font-medium text-gray-700">Peso Final Filé (Kg)</label><input type="text" name="pesoFinalFileManual" value={formData.pesoFinalFileManual} onChange={handleChange} className="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm"/></div>
+                        </div>
+                    </div>
+
+                    <div className="flex justify-end gap-4 border-t pt-4">
+                        <button onClick={onClose} className="bg-gray-300 text-gray-800 font-bold py-2 px-4 rounded-lg hover:bg-gray-400 transition">Cancelar</button>
+                        <button onClick={handleSaveClick} className="bg-blue-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-blue-700 transition disabled:bg-gray-400" disabled={isSaving}>
+                           {isSaving ? 'Salvando...' : 'Salvar Alterações'}
+                        </button>
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
+    function ConsultationPage() {
+        const [avaliacoes, setAvaliacoes] = React.useState([]);
+        const [loading, setLoading] = React.useState(true);
+        const [error, setError] = React.useState('');
+        const [selectedYear, setSelectedYear] = React.useState('all');
+        const [selectedMonth, setSelectedMonth] = React.useState('all');
+        const [selectedSupplier, setSelectedSupplier] = React.useState('all');
+        const [isEditModalOpen, setIsEditModalOpen] = React.useState(false);
+        const [currentItem, setCurrentItem] = React.useState(null);
+        const [isSaving, setIsSaving] = React.useState(false);
+        const [isConfirmDeleteOpen, setIsConfirmDeleteOpen] = React.useState(false);
+        const [itemToDelete, setItemToDelete] = React.useState(null);
+        const [isDeleting, setIsDeleting] = React.useState(false);
+
+
+        React.useEffect(() => {
+            const q = window.firebase9.query(window.firebase9.collection(db, "avaliacoes"), window.firebase9.orderBy("selectedDate", "desc"));
+            const unsubscribe = window.firebase9.onSnapshot(q, querySnapshot => {
+                const docs = [];
+                querySnapshot.forEach(doc => { docs.push({ id: doc.id, ...doc.data() }); });
+                setAvaliacoes(docs);
+                setLoading(false);
+            }, err => {
+                setError("Falha ao buscar dados do Firestore.");
+                setLoading(false);
+            });
+            
+            return () => unsubscribe();
+        }, []);
+
+        const { years, months, suppliers } = React.useMemo(() => {
+            const yearSet = new Set();
+            const monthSet = new Set();
+            const supplierSet = new Set();
+            avaliacoes.forEach(item => {
+                const date = parseDate(item.selectedDate);
+                if (date) {
+                    yearSet.add(date.getUTCFullYear());
+                    monthSet.add(date.getUTCMonth());
+                }
+                if (item.fornecedor) supplierSet.add(item.fornecedor);
+            });
+            return { years: [...yearSet].sort((a, b) => b - a), months: [...monthSet].sort((a, b) => a - b), suppliers: [...supplierSet].sort() };
+        }, [avaliacoes]);
+
+        const filteredData = React.useMemo(() => {
+            return avaliacoes.filter(item => {
+                const date = parseDate(item.selectedDate);
+                if (!date) return false;
+                const yearMatch = selectedYear === 'all' || date.getUTCFullYear() == selectedYear;
+                const monthMatch = selectedMonth === 'all' || date.getUTCMonth() == selectedMonth;
+                const supplierMatch = selectedSupplier === 'all' || item.fornecedor === selectedSupplier;
+                return yearMatch && monthMatch && supplierMatch;
+            });
+        }, [avaliacoes, selectedYear, selectedMonth, selectedSupplier]);
+        
+        const tableSummary = React.useMemo(() => {
+            const totals = {
+                pesoPiscicultura: 0, pesoMoradaFish: 0, refugo: 0, peixeParaFile: 0,
+                pesoFinalFileManual: 0, entradaFiletagem: 0, difFiletagemEntrada: 0,
+                sumRendimentoGeral: 0, sumRendimentoFiletadores: 0, sumRendimentoRefino: 0,
+                sumRendimentoTeorico: 0, count: filteredData.length
+            };
+
+            if (totals.count === 0) {
+              return {
+                  pesoPiscicultura: 0, pesoMoradaFish: 0, refugo: 0, peixeParaFile: 0,
+                  pesoFinalFileManual: 0, entradaFiletagem: 0, difFiletagemEntrada: 0,
+                  avgRendimentoGeral: 0, avgRendimentoFiletadores: 0, avgRendimentoRefino: 0,
+                  avgRendimentoTeorico: 0, count: 0
+              };
+            }
+
+            filteredData.forEach(item => {
+                totals.pesoPiscicultura += item.pesoPiscicultura || 0;
+                totals.pesoMoradaFish += item.pesoMoradaFish || 0;
+                totals.refugo += item.refugo || 0;
+                totals.peixeParaFile += item.peixeParaFile || 0;
+                totals.pesoFinalFileManual += item.pesoFinalFileManual || 0;
+                totals.entradaFiletagem += item.entradaFiletagem || 0;
+                totals.difFiletagemEntrada += item.difFiletagemEntrada || 0;
+                totals.sumRendimentoGeral += (item.rendimentoGeral || 0) * 100;
+                totals.sumRendimentoFiletadores += (item.rendimentoFiletadores || 0) * 100;
+                totals.sumRendimentoRefino += (item.rendimentoRefino || 0) * 100;
+                totals.sumRendimentoTeorico += item.rendimentoTeorico || 0;
+            });
+
+            return {
+                ...totals,
+                avgRendimentoGeral: totals.sumRendimentoGeral / totals.count,
+                avgRendimentoFiletadores: totals.sumRendimentoFiletadores / totals.count,
+                avgRendimentoRefino: totals.sumRendimentoRefino / totals.count,
+                avgRendimentoTeorico: totals.sumRendimentoTeorico / totals.count
+            };
+        }, [filteredData]);
+
+        const periodSummary = React.useMemo(() => {
+            if (filteredData.length === 0) return { diasTrabalhados: 0, mediaAbate: 0, avgRendFiletadores: 0, avgRendRefino: 0, avgRendimentoGeral: 0 };
+            const diasTrabalhados = new Set(filteredData.map(item => item.selectedDate)).size;
+            const totalPeixeParaFile = tableSummary.peixeParaFile;
+            const mediaAbate = diasTrabalhados > 0 ? totalPeixeParaFile / diasTrabalhados : 0;
+            return { 
+                diasTrabalhados, 
+                totalPeixeParaFile, 
+                mediaAbate, 
+                avgRendFiletadores: tableSummary.avgRendimentoFiletadores, 
+                avgRendRefino: tableSummary.avgRendimentoRefino,
+                avgRendimentoGeral: tableSummary.avgRendimentoGeral
+            };
+        }, [filteredData, tableSummary]);
+
+        const supplierSummary = React.useMemo(() => {
+            if (filteredData.length === 0) return [];
+            const bySupplier = {};
+            filteredData.forEach(item => {
+                if (!item.fornecedor) return;
+                if (!bySupplier[item.fornecedor]) { bySupplier[item.fornecedor] = { nome: item.fornecedor, totalPeixe: 0, totalFile: 0 }; }
+                bySupplier[item.fornecedor].totalPeixe += item.peixeParaFile || 0;
+                bySupplier[item.fornecedor].totalFile += item.pesoFinalFileManual || 0;
+            });
+            return Object.values(bySupplier).map(supplier => ({ ...supplier, rendimentoMedio: supplier.totalPeixe > 0 ? (supplier.totalFile / supplier.totalPeixe) * 100 : 0 })).sort((a, b) => b.rendimentoMedio - a.rendimentoMedio);
+        }, [filteredData]);
+        
+        const dailyChartData = React.useMemo(() => {
+            if (filteredData.length === 0) return [];
+            if (selectedMonth !== 'all') {
+                return filteredData.map(item => {
+                    const date = parseDate(item.selectedDate);
+                    return { ...item, dateObj: date, name: date ? formatDate(date).slice(0, 5) : 'Inválido', 'Rendimento Geral (%)': parseFloat(((item.rendimentoGeral || 0) * 100).toFixed(2)) };
+                }).sort((a, b) => a.dateObj - b.dateObj);
+            }
+            const monthlySummary = {};
+            filteredData.forEach(item => {
+                const date = parseDate(item.selectedDate);
+                if (date) {
+                    const monthKey = `${date.getUTCFullYear()}-${date.getUTCMonth()}`;
+                    if (!monthlySummary[monthKey]) { monthlySummary[monthKey] = { rendimentos: [], year: date.getUTCFullYear(), month: date.getUTCMonth() }; }
+                    monthlySummary[monthKey].rendimentos.push(item.rendimentoGeral || 0);
+                }
+            });
+            return Object.values(monthlySummary).map(summary => {
+                const avgRendimento = summary.rendimentos.reduce((a, b) => a + b, 0) / summary.rendimentos.length;
+                return { name: `${monthNames[summary.month].substring(0, 3)}/${String(summary.year).slice(2)}`, 'Rendimento Geral (%)': parseFloat((avgRendimento * 100).toFixed(2)), year: summary.year, month: summary.month };
+            }).sort((a, b) => a.year - b.year || a.month - b.month);
+        }, [filteredData, selectedMonth]);
+
+        const { trendData: supplierTrendData, trendSuppliers } = React.useMemo(() => {
+            if (filteredData.length === 0) return { trendData: [], trendSuppliers: [] };
+        
+            const trendSuppliers = [...new Set(filteredData.map(i => i.fornecedor).filter(Boolean))];
+            const dataMap = new Map();
+        
+            filteredData.forEach(item => {
+                if (!item.fornecedor) return;
+        
+                const date = parseDate(item.selectedDate);
+                if (!date) return;
+        
+                let key = '';
+                if (selectedMonth !== 'all') {
+                    key = formatDate(date).slice(0, 5); // DD/MM
+                } else {
+                    key = `${monthNames[date.getUTCMonth()].substring(0, 3)}/${String(date.getUTCFullYear()).slice(2)}`;
+                }
+        
+                if (!dataMap.has(key)) {
+                    dataMap.set(key, { name: key, dateObj: date });
+                }
+        
+                const entry = dataMap.get(key);
+                const rendimento = parseFloat(((item.rendimentoGeral || 0) * 100).toFixed(2));
+                
+                if (entry[item.fornecedor]) {
+                    entry[item.fornecedor] = (entry[item.fornecedor] + rendimento) / 2;
+                } else {
+                    entry[item.fornecedor] = rendimento;
+                }
+            });
+        
+            const trendData = [...dataMap.values()].sort((a, b) => a.dateObj - b.dateObj);
+            return { trendData, trendSuppliers };
+        }, [filteredData, selectedMonth]);
+
+        const supplierColors = React.useMemo(() => {
+            const colors = {};
+            trendSuppliers.forEach((name, index) => {
+                colors[name] = `hsl(${(index * 60) % 360}, 65%, 50%)`;
+            });
+            return colors;
+        }, [trendSuppliers]);
+
+        const handleDeleteRequest = (docId) => {
+            setItemToDelete(docId);
+            setIsConfirmDeleteOpen(true);
+        };
+
+        const handleDeleteConfirm = async () => {
+            if (!itemToDelete) return;
+            setIsDeleting(true);
+            try {
+                await window.firebase9.deleteDoc(window.firebase9.doc(db, "avaliacoes", itemToDelete));
+                console.log("Lançamento excluído com sucesso!");
+                setItemToDelete(null);
+                setIsConfirmDeleteOpen(false);
+            } catch (error) {
+                console.error("Erro ao excluir documento: ", error);
+            } finally {
+                setIsDeleting(false);
+            }
+        };
+
+        const handleEditClick = (item) => {
+            const formReadyItem = { ...item, pesoPiscicultura: String(item.pesoPiscicultura || '').replace('.', ','), pesoMoradaFish: String(item.pesoMoradaFish || '').replace('.', ','), refugo: String(item.refugo || '').replace('.', ','), pesoFinalFileManual: String(item.pesoFinalFileManual || '').replace('.', ','), };
+            setCurrentItem(formReadyItem);
+            setIsEditModalOpen(true);
+        };
+        
+        const handleSaveChanges = async (updatedItem) => {
+            if (!updatedItem || !updatedItem.id) { console.error("Erro: Item inválido para atualização."); return; }
+            setIsSaving(true);
+            const { id, ...dataFromForm } = updatedItem;
+            const originalItem = avaliacoes.find(item => item.id === id);
+            const entradaFiletagem = originalItem.entradaFiletagem;
+            const pesoFinalFiletador = originalItem.pesoFinalFiletador;
+            const rendimentoTeorico = originalItem.rendimentoTeorico;
+            const pesoMoradaFish = dataFromForm.pesoMoradaFish;
+            const refugo = dataFromForm.refugo;
+            const pesoFinalFileManual = dataFromForm.pesoFinalFileManual;
+            const peixeParaFile = pesoMoradaFish > 0 ? pesoMoradaFish - refugo : 0;
+            const rendimentoGeral = peixeParaFile > 0 ? (pesoFinalFileManual / peixeParaFile) : 0;
+            const rendimentoRefino = pesoFinalFiletador > 0 ? (pesoFinalFileManual / pesoFinalFiletador) : 0;
+            const difTeoricoReal = ((rendimentoGeral * 100) - rendimentoTeorico);
+            const dataToSave = { ...dataFromForm, peixeParaFile, rendimentoGeral, rendimentoRefino, difTeoricoReal, };
+            try { await window.firebase9.updateDoc(window.firebase9.doc(db, "avaliacoes", id), dataToSave); console.log("Lançamento atualizado com sucesso!"); setIsEditModalOpen(false); setCurrentItem(null); } catch (error) { console.error("Erro ao atualizar documento: ", error); } finally { setIsSaving(false); }
+        };
+
+        if (loading) return <div className="text-center p-10">Carregando...</div>;
+        if (error) return <div className="text-center p-10 text-red-600 font-bold">{error}</div>;
+
+        return (
+            <div className="space-y-8">
+                <ConfirmationModal 
+                    isOpen={isConfirmDeleteOpen}
+                    onClose={() => setIsConfirmDeleteOpen(false)}
+                    onConfirm={handleDeleteConfirm}
+                    title="Confirmar Exclusão"
+                    message="Tem certeza que deseja excluir este lançamento? Esta ação não pode ser desfeita."
+                    isLoading={isDeleting}
+                />
+                {isEditModalOpen && ( <EditModal item={currentItem} onClose={() => setIsEditModalOpen(false)} onSave={handleSaveChanges} isSaving={isSaving} /> )}
+                <h2 className="text-3xl font-bold text-gray-800 text-center">Análise Histórica de Avaliações</h2>
+
+                <div className="bg-white p-4 rounded-lg shadow-md flex flex-wrap justify-center items-center gap-4">
+                     <select value={selectedYear} onChange={(e) => setSelectedYear(e.target.value)} className="p-2 border rounded-lg bg-white text-gray-700 shadow-sm focus:ring-2 focus:ring-blue-500"> <option value="all">Todos os Anos</option> {years.map(year => <option key={year} value={year}>{year}</option>)} </select>
+                     <select value={selectedMonth} onChange={(e) => setSelectedMonth(e.target.value)} className="p-2 border rounded-lg bg-white text-gray-700 shadow-sm focus:ring-2 focus:ring-blue-500"> <option value="all">Todos os Meses</option> {months.map(month => <option key={month} value={month}>{monthNames[month]}</option>)} </select>
+                     <select value={selectedSupplier} onChange={(e) => setSelectedSupplier(e.target.value)} className="p-2 border rounded-lg bg-white text-gray-700 shadow-sm focus:ring-2 focus:ring-blue-500"> <option value="all">Todos Fornecedores</option> {suppliers.map(supplier => <option key={supplier} value={supplier}>{supplier}</option>)} </select>
+                </div>
+                
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                    <div className="bg-white p-6 rounded-lg shadow-md">
+                        <h3 className="text-xl font-semibold text-gray-800 mb-4">Resumo Geral do Período</h3>
+                        <div className="space-y-2">
+                            <div className="flex justify-between"><span>Dias Trabalhados:</span> <span className="font-bold">{periodSummary.diasTrabalhados}</span></div>
+                            <div className="flex justify-between"><span>Volume Total p/ Filé (Kg):</span> <span className="font-bold">{formatNumberWithSeparators(periodSummary.totalPeixeParaFile)}</span></div>
+                            <div className="flex justify-between"><span>Média de Abate Diário (Kg):</span> <span className="font-bold">{formatNumberWithSeparators(periodSummary.mediaAbate)}</span></div>
+                            <div className="flex justify-between"><span>Média Rend. Geral (%):</span> <span className="font-bold text-blue-700">{periodSummary.avgRendimentoGeral.toFixed(2)}%</span></div>
+                            <div className="flex justify-between"><span>Média Rend. Filetadores (%):</span> <span className="font-bold text-green-700">{periodSummary.avgRendFiletadores.toFixed(2)}%</span></div>
+                            <div className="flex justify-between"><span>Média Rend. Refino (%):</span> <span className="font-bold text-purple-700">{periodSummary.avgRendRefino.toFixed(2)}%</span></div>
+                        </div>
+                    </div>
+                    <div className="bg-white p-6 rounded-lg shadow-md">
+                        <h3 className="text-xl font-semibold text-gray-800 mb-4">Resumo por Fornecedor</h3>
+                        <div className="overflow-x-auto max-h-48">
+                            <table className="w-full text-left text-sm">
+                                <thead className="border-b-2 sticky top-0 bg-white"><tr><th className="pb-1">Fornecedor</th><th className="pb-1">Vol. Peixe (Kg)</th><th className="pb-1">Vol. Filé (Kg)</th><th className="pb-1">Rend. Médio</th></tr></thead>
+                                <tbody>
+                                    {supplierSummary.map(s => (
+                                        <tr key={s.nome} className="border-b">
+                                            <td className="py-1">{s.nome}</td>
+                                            <td className="py-1">{formatNumberWithSeparators(s.totalPeixe)}</td>
+                                            <td className="py-1">{formatNumberWithSeparators(s.totalFile)}</td>
+                                            <td className="py-1 font-bold text-blue-700">{s.rendimentoMedio.toFixed(2)}%</td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <div className="bg-white p-6 rounded-lg shadow-md">
+                    <h3 className="text-xl font-semibold text-gray-800 mb-4 text-center">Rendimento Geral e por Fornecedor</h3>
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                        <div>
+                            <h4 className="text-lg font-semibold text-gray-700 mb-2 text-center">Rendimento Geral Diário/Mensal (%)</h4>
+                            <Recharts.ResponsiveContainer width="100%" height={300}>
+                                <Recharts.LineChart data={dailyChartData}>
+                                    <Recharts.CartesianGrid strokeDasharray="3 3" />
+                                    <Recharts.XAxis dataKey="name" fontSize={10} />
+                                    <Recharts.YAxis domain={['dataMin - 2', 'dataMax + 2']} tickFormatter={(t) => `${t.toFixed(0)}%`} />
+                                    <Recharts.Tooltip formatter={(v) => `${v.toFixed(2)}%`} />
+                                    <Recharts.Line type="monotone" dataKey="Rendimento Geral (%)" stroke="#8884d8" name="Rendimento Geral" />
+                                </Recharts.LineChart>
+                            </Recharts.ResponsiveContainer>
+                        </div>
+                        <div>
+                            <h4 className="text-lg font-semibold text-gray-700 mb-2 text-center">Tendência de Rendimento por Fornecedor</h4>
+                            <Recharts.ResponsiveContainer width="100%" height={300}>
+                                <Recharts.LineChart data={supplierTrendData}>
+                                    <Recharts.CartesianGrid strokeDasharray="3 3" />
+                                    <Recharts.XAxis dataKey="name" fontSize={10} />
+                                    <Recharts.YAxis domain={[30, 'dataMax + 2']} tickFormatter={(t) => `${t.toFixed(0)}%`} />
+                                    <Recharts.Tooltip formatter={(v, name) => [`${v.toFixed(2)}%`, name]} />
+                                    <Recharts.Legend />
+                                    {trendSuppliers.map(supplier => (
+                                        <Recharts.Line key={supplier} type="monotone" dataKey={supplier} stroke={supplierColors[supplier] || '#000000'} strokeWidth={2} name={supplier} connectNulls />
+                                    ))}
+                                </Recharts.LineChart>
+                            </Recharts.ResponsiveContainer>
+                        </div>
+                    </div>
+                </div>
+
+                <div className="bg-white p-6 rounded-lg shadow-md">
+                    <h3 className="text-xl font-semibold text-gray-800 mb-4">Dados Detalhados</h3>
+                    {filteredData.length === 0 ? ( <div className="text-center text-gray-500 py-4">Nenhum dado encontrado para os filtros selecionados.</div> ) : (
+                        <div className="overflow-x-auto">
+                            <table className="w-full text-left border-collapse text-xs">
+                                <thead className="bg-gray-200">
+                                    <tr>
+                                        <th className="p-2 border font-semibold">Ações</th>
+                                        <th className="p-2 border font-semibold">Data</th>
+                                        <th className="p-2 border font-semibold">Fornecedor</th>
+                                        <th className="p-2 border font-semibold">Pisc. (Kg)</th>
+                                        <th className="p-2 border font-semibold">Entrada (Kg)</th>
+                                        <th className="p-2 border font-semibold">Refugo (Kg)</th>
+                                        <th className="p-2 border font-semibold">P/ Filé (Kg)</th>
+                                        <th className="p-2 border font-semibold">Filé Final (Kg)</th>
+                                        <th className="p-2 border font-semibold">Entr. Filetagem (Kg)</th>
+                                        <th className="p-2 border font-semibold">Dif. Filetagem (Kg)</th>
+                                        <th className="p-2 border font-semibold text-blue-700">Rend. Geral (%)</th>
+                                        <th className="p-2 border font-semibold text-green-700">Rend. Filetadores (%)</th>
+                                        <th className="p-2 border font-semibold text-purple-700">Rend. Refino (%)</th>
+                                        <th className="p-2 border font-semibold">Rend. Teórico (%)</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {filteredData.map(item => (
+                                        <tr key={item.id} className="hover:bg-gray-50">
+                                            <td className="p-2 border"><div className="flex gap-2"><button onClick={() => handleEditClick(item)} className="text-xs bg-blue-500 text-white px-2 py-1 rounded hover:bg-blue-600">Editar</button><button onClick={() => handleDeleteRequest(item.id)} className="text-xs bg-red-500 text-white px-2 py-1 rounded hover:bg-red-600">Excluir</button></div></td>
+                                            <td className="p-2 border">{formatDate(parseDate(item.selectedDate))}</td>
+                                            <td className="p-2 border">{item.fornecedor}</td>
+                                            <td className="p-2 border">{formatNumberWithSeparators(item.pesoPiscicultura)}</td>
+                                            <td className="p-2 border">{formatNumberWithSeparators(item.pesoMoradaFish)}</td>
+                                            <td className="p-2 border">{formatNumberWithSeparators(item.refugo)}</td>
+                                            <td className="p-2 border">{formatNumberWithSeparators(item.peixeParaFile)}</td>
+                                            <td className="p-2 border">{formatNumberWithSeparators(item.pesoFinalFileManual)}</td>
+                                            <td className="p-2 border">{formatNumberWithSeparators(item.entradaFiletagem)}</td>
+                                            <td className="p-2 border">{formatNumberWithSeparators(item.difFiletagemEntrada)}</td>
+                                            <td className="p-2 border font-medium text-blue-700">{((item.rendimentoGeral || 0) * 100).toFixed(2)}%</td>
+                                            <td className="p-2 border font-medium text-green-700">{((item.rendimentoFiletadores || 0) * 100).toFixed(2)}%</td>
+                                            <td className="p-2 border font-medium text-purple-700">{((item.rendimentoRefino || 0) * 100).toFixed(2)}%</td>
+                                            <td className="p-2 border">{((item.rendimentoTeorico || 0)).toFixed(2)}%</td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                                <tfoot className="bg-gray-100 font-bold">
+                                    <tr>
+                                        <td className="p-2 border text-right" colSpan="3">TOTAIS / MÉDIAS</td>
+                                        <td className="p-2 border">{formatNumberWithSeparators(tableSummary.pesoPiscicultura)}</td>
+                                        <td className="p-2 border">{formatNumberWithSeparators(tableSummary.pesoMoradaFish)}</td>
+                                        <td className="p-2 border">{formatNumberWithSeparators(tableSummary.refugo)}</td>
+                                        <td className="p-2 border">{formatNumberWithSeparators(tableSummary.peixeParaFile)}</td>
+                                        <td className="p-2 border">{formatNumberWithSeparators(tableSummary.pesoFinalFileManual)}</td>
+                                        <td className="p-2 border">{formatNumberWithSeparators(tableSummary.entradaFiletagem)}</td>
+                                        <td className="p-2 border">{formatNumberWithSeparators(tableSummary.difFiletagemEntrada)}</td>
+                                        <td className="p-2 border text-blue-700">{tableSummary.avgRendimentoGeral.toFixed(2)}%</td>
+                                        <td className="p-2 border text-green-700">{tableSummary.avgRendimentoFiletadores.toFixed(2)}%</td>
+                                        <td className="p-2 border text-purple-700">{tableSummary.avgRendimentoRefino.toFixed(2)}%</td>
+                                        <td className="p-2 border">{tableSummary.avgRendimentoTeorico.toFixed(2)}%</td>
+                                    </tr>
+                                </tfoot>
+                            </table>
+                        </div>
+                    )}
+                </div>
+            </div>
+        );
+    }
+    
+    function AwardsPage({ data }) {
+        const [selectedEmployee, setSelectedEmployee] = React.useState('');
+        const [selectedYear, setSelectedYear] = React.useState(new Date().getFullYear());
+        const [selectedMonth, setSelectedMonth] = React.useState(new Date().getMonth());
+
+        const { employees, years } = React.useMemo(() => {
+            if (!data) return { employees: [], years: [] };
+            const employeeSet = new Set();
+            const yearSet = new Set();
+            Object.keys(data).forEach(employeeName => {
+                const hasDataForPeriod = data[employeeName].daily.some(day => {
+                    const date = parseDate(day.date);
+                    return date && date.getUTCFullYear() === selectedYear && date.getUTCMonth() === selectedMonth;
+                });
+                if (hasDataForPeriod) {
+                    employeeSet.add(employeeName);
+                }
+            });
+            Object.values(data).forEach(emp => {
+                emp.daily.forEach(day => {
+                    const date = parseDate(day.date);
+                    if (date) yearSet.add(date.getUTCFullYear());
+                });
+            });
+            return {
+                employees: [...employeeSet].sort(),
+                years: [...yearSet].sort((a, b) => b - a)
+            };
+        }, [data, selectedYear, selectedMonth]);
+
+        React.useEffect(() => {
+            if (employees.length > 0 && !employees.includes(selectedEmployee)) {
+                setSelectedEmployee(employees[0]);
+            } else if (employees.length === 0) {
+                setSelectedEmployee('');
+            }
+        }, [employees, selectedEmployee]);
+
+        const getPremioProdutividadeFactor = (rendimento) => {
+            const r = rendimento / 100;
+            if (r < 0.395) return 0.008; if (r < 0.400) return 0.012; if (r < 0.405) return 0.016;
+            if (r < 0.410) return 0.020; if (r < 0.415) return 0.028; if (r < 0.420) return 0.036;
+            if (r < 0.425) return 0.044; if (r < 0.430) return 0.056; if (r < 0.435) return 0.068;
+            if (r < 0.440) return 0.080; if (r < 0.445) return 0.096; if (r < 0.450) return 0.112;
+            return 0.128;
+        };
+
+        const getBonusProdutividadeFactor = (mediaPeixe) => {
+            if (mediaPeixe < 700) return 0; if (mediaPeixe <= 750) return 0.015; if (mediaPeixe <= 800) return 0.020;
+            if (mediaPeixe <= 850) return 0.025; if (mediaPeixe <= 900) return 0.030; if (mediaPeixe <= 1000) return 0.035;
+            return 0.04;
+        };
+
+        const calculateAwards = (mediaRendimento, mediaPeixe, diasTrabalhados) => {
+            if(diasTrabalhados === 0) return { premio: 0, bonus: 0, total: 0 };
+            
+            const premioFactor = getPremioProdutividadeFactor(mediaRendimento);
+            const premio = diasTrabalhados * premioFactor * mediaPeixe;
+            
+            let bonus = 0;
+            if (mediaRendimento >= 41.5) {
+                const bonusFactor = getBonusProdutividadeFactor(mediaPeixe);
+                bonus = diasTrabalhados * mediaPeixe * bonusFactor;
+            }
+            const total = premio + bonus;
+            return { premio, bonus, total };
+        };
+
+        const employeeData = React.useMemo(() => {
+            if (!data || !selectedEmployee || !data[selectedEmployee]) return null;
+            
+            const monthlyData = data[selectedEmployee].daily.filter(day => {
+                const date = parseDate(day.date);
+                return date && date.getUTCFullYear() === selectedYear && date.getUTCMonth() === selectedMonth;
+            });
+
+            if (monthlyData.length === 0) return { mediaPeixe: 0, mediaRendimento: 0, diasTrabalhados: 0, totalPeixeMes: 0 };
+
+            const totalPeixe = monthlyData.reduce((sum, day) => sum + day.peixe, 0);
+            const totalFile = monthlyData.reduce((sum, day) => sum + day.file, 0);
+            const diasTrabalhados = monthlyData.length;
+            const mediaPeixe = totalPeixe / diasTrabalhados;
+            const mediaRendimento = totalPeixe > 0 ? (totalFile / totalPeixe) * 100 : 0;
+
+            return { mediaPeixe, mediaRendimento, diasTrabalhados, totalPeixeMes: totalPeixe };
+        }, [data, selectedEmployee, selectedYear, selectedMonth]);
+
+        const monthlyEarningsHistory = React.useMemo(() => {
+            if (!data || !selectedEmployee || !data[selectedEmployee]) return [];
+
+            return monthNames.map((monthName, index) => {
+                const monthData = data[selectedEmployee].daily.filter(d => {
+                    const date = parseDate(d.date);
+                    return date && date.getUTCFullYear() === selectedYear && date.getUTCMonth() === index;
+                });
+
+                if (monthData.length === 0) return { name: monthName.substring(0, 3), Ganhos: 0 };
+                
+                const totalPeixe = monthData.reduce((sum, day) => sum + day.peixe, 0);
+                const totalFile = monthData.reduce((sum, day) => sum + day.file, 0);
+                const diasTrabalhados = monthData.length;
+                const mediaPeixe = totalPeixe / diasTrabalhados;
+                const mediaRendimento = totalPeixe > 0 ? (totalFile / totalPeixe) * 100 : 0;
+
+                const { total } = calculateAwards(mediaRendimento, mediaPeixe, diasTrabalhados);
+                return { name: monthName.substring(0, 3), Ganhos: parseFloat(total.toFixed(2)) };
+            });
+
+        }, [data, selectedEmployee, selectedYear]);
+
+        const currentAwards = React.useMemo(() => {
+            if (!employeeData) return { premio: 0, bonus: 0, total: 0 };
+            const { mediaRendimento, mediaPeixe, diasTrabalhados } = employeeData;
+            return calculateAwards(mediaRendimento, mediaPeixe, diasTrabalhados);
+        }, [employeeData]);
+
+        const potentialEarningsData = React.useMemo(() => {
+            if (!employeeData) return [];
+            const { mediaRendimento, mediaPeixe, diasTrabalhados } = employeeData;
+            if(diasTrabalhados === 0) return [];
+
+            const scenarios = [
+                { title: 'Melhora 0.5% Rend.', rend: Math.min(mediaRendimento + 0.5, 45), peixe: mediaPeixe },
+                { title: 'Melhora 1.0% Rend.', rend: Math.min(mediaRendimento + 1.0, 45), peixe: mediaPeixe },
+                { title: 'Meta Peixe 700kg', rend: mediaRendimento, peixe: 700 },
+                { title: 'Meta Peixe 850kg', rend: mediaRendimento, peixe: 850 },
+                { title: 'Meta Peixe 1001kg', rend: mediaRendimento, peixe: 1001 },
+                { title: 'Super Meta (+1% & 850kg)', rend: Math.min(mediaRendimento + 1.0, 45), peixe: 850 },
+            ];
+
+            return scenarios.map(scenario => {
+                const { premio, bonus, total } = calculateAwards(scenario.rend, scenario.peixe, diasTrabalhados);
+                return { ...scenario, premio, bonus, total };
+            });
+        }, [employeeData]);
+        
+        const StatCard = ({label, value, unit, icon}) => (
+            <div className="bg-gray-100 p-4 rounded-lg flex items-center">
+                <div className="p-3 mr-4 text-xl bg-gray-200 text-gray-700 rounded-full">{icon}</div>
+                <div>
+                    <div className="text-sm font-medium text-gray-600">{label}</div>
+                    <div className="text-2xl font-bold text-gray-900">{value} <span className="text-lg font-normal">{unit}</span></div>
+                </div>
+            </div>
+        );
+
+        return (
+            <div className="bg-white p-6 md:p-8 rounded-lg shadow-md space-y-8">
+                <div className="text-center">
+                    <h2 className="text-3xl font-bold text-gray-800">Painel de Premiação Individual</h2>
+                    <p className="text-gray-600 mt-2">Avalie a premiação mensal de cada colaborador.</p>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-end p-4 bg-gray-50 rounded-lg">
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700">Colaborador</label>
+                        <select value={selectedEmployee} onChange={(e) => setSelectedEmployee(e.target.value)} className="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm" disabled={employees.length === 0}>
+                            {employees.length > 0 ? employees.map(e => <option key={e} value={e}>{e}</option>) : <option>Nenhum disponível</option>}
+                        </select>
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700">Mês</label>
+                        <select value={selectedMonth} onChange={(e) => setSelectedMonth(parseInt(e.target.value, 10))} className="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm">
+                            {monthNames.map((m, i) => <option key={i} value={i}>{m}</option>)}
+                        </select>
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700">Ano</label>
+                        <select value={selectedYear} onChange={(e) => setSelectedYear(parseInt(e.target.value, 10))} className="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm">
+                             {years.map(y => <option key={y} value={y}>{y}</option>)}
+                        </select>
+                    </div>
+                </div>
+                
+                {selectedEmployee && employeeData && employeeData.diasTrabalhados > 0 ? (
+                    <>
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 pt-4 border-t">
+                             <StatCard label="Dias Trabalhados" value={employeeData.diasTrabalhados} unit="dias" icon="📅" />
+                             <StatCard label="Média Rendimento" value={employeeData.mediaRendimento.toFixed(2)} unit="%" icon="🎯" />
+                             <StatCard label="Média de Peixe" value={formatNumberWithSeparators(employeeData.mediaPeixe)} unit="kg/dia" icon="🐟" />
+                             <StatCard label="Peixe Recebido (Mês)" value={formatNumberWithSeparators(employeeData.totalPeixeMes)} unit="kg" icon="📦" />
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                            <div className="space-y-6">
+                                <div className="bg-blue-50 border-l-4 border-blue-500 p-6 rounded-lg flex items-center gap-6">
+                                    <img src="https://img.icons8.com/plasticine/100/trophy.png" alt="Troféu" className="w-20 h-20" />
+                                    <div>
+                                        <h3 className="text-lg font-semibold text-blue-800">Prêmio por Produtividade</h3>
+                                        <p className="text-4xl font-bold text-blue-600">R$ {formatNumberWithSeparators(currentAwards.premio)}</p>
+                                    </div>
+                                </div>
+                                <div className="bg-green-50 border-l-4 border-green-500 p-6 rounded-lg flex items-center gap-6">
+                                     <img src="https://img.icons8.com/plasticine/100/money-bag.png" alt="Saco de Dinheiro" className="w-20 h-20" />
+                                    <div>
+                                        <h3 className="text-lg font-semibold text-green-800">Bônus por Produtividade</h3>
+                                        <p className="text-4xl font-bold text-green-600">R$ {formatNumberWithSeparators(currentAwards.bonus)}</p>
+                                    </div>
+                                </div>
+                            </div>
+                            <div className="bg-gray-800 text-white p-6 rounded-lg flex flex-col justify-center items-center">
+                                <h3 className="text-xl font-semibold">VALOR TOTAL A PAGAR</h3>
+                                <p className="text-6xl font-bold mt-2">R$ {formatNumberWithSeparators(currentAwards.total)}</p>
+                            </div>
+                        </div>
+
+                        <div className="bg-gray-50 p-6 rounded-lg">
+                            <h3 className="text-xl font-semibold text-gray-800 mb-4 text-center">Histórico de Ganhos - {selectedYear}</h3>
+                            <Recharts.ResponsiveContainer width="100%" height={300}>
+                                <Recharts.BarChart data={monthlyEarningsHistory}>
+                                    <Recharts.CartesianGrid strokeDasharray="3 3" />
+                                    <Recharts.XAxis dataKey="name" />
+                                    <Recharts.YAxis tickFormatter={(value) => `R$${value}`}/>
+                                    <Recharts.Tooltip formatter={(value) => `R$ ${formatNumberWithSeparators(value)}`} />
+                                    <Recharts.Legend />
+                                    <Recharts.Bar dataKey="Ganhos" fill="#8884d8" name={`Ganhos de ${selectedEmployee}`} />
+                                </Recharts.BarChart>
+                            </Recharts.ResponsiveContainer>
+                        </div>
+                        
+                        <div className="bg-gray-50 p-6 rounded-lg">
+                            <h3 className="text-xl font-semibold text-gray-800 mb-4 text-center">📈 Potencial de Ganhos</h3>
+                            <p className="text-center text-gray-600 mb-4">Veja o que você pode ganhar ao atingir novas metas neste mês.</p>
+                            <div className="overflow-x-auto">
+                                <table className="w-full text-left">
+                                    <thead className="bg-gray-200">
+                                        <tr>
+                                            <th className="p-3 font-semibold">Cenário</th>
+                                            <th className="p-3 font-semibold text-center">Rend. (%)</th>
+                                            <th className="p-3 font-semibold text-center">Peixe (Kg)</th>
+                                            <th className="p-3 font-semibold text-center">Prêmio (R$)</th>
+                                            <th className="p-3 font-semibold text-center">Bônus (R$)</th>
+                                            <th className="p-3 font-semibold text-center text-green-600">Total (R$)</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {potentialEarningsData.map((s, i) => (
+                                            <tr key={i} className="border-b hover:bg-gray-100">
+                                                <td className="p-2 font-medium">{s.title}</td>
+                                                <td className="p-2 text-center">{s.rend.toFixed(2)}%</td>
+                                                <td className="p-2 text-center">{s.peixe.toFixed(2)}</td>
+                                                <td className="p-2 text-center text-blue-600">{formatNumberWithSeparators(s.premio)}</td>
+                                                <td className="p-2 text-center text-green-600">{formatNumberWithSeparators(s.bonus)}</td>
+                                                <td className="p-2 text-center font-bold text-lg text-green-700">{formatNumberWithSeparators(s.total)}</td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                    </>
+                ) : (
+                    <div className="text-center py-12 bg-gray-50 rounded-lg">
+                        <p className="text-gray-500">Nenhum dado de performance encontrado para {selectedEmployee || 'o colaborador'} em {monthNames[selectedMonth]} de {selectedYear}.</p>
+                        <p className="text-gray-400 text-sm mt-2">Por favor, selecione outro período ou colaborador.</p>
+                    </div>
+                )}
+            </div>
+        );
+    }
+
+    function Dashboard({ data, handleLogout, user }) {
+        const [page, setPage] = React.useState('production');
+        const lineColors = React.useMemo(() => { const colors = {}; const allFiletadores = Object.keys(data || {}).sort(); allFiletadores.forEach((name, index) => { colors[name] = `hsl(${(index * 40) % 360}, 70%, 50%)`; }); return colors; }, [data]);
+
+        const NavButton = ({ targetPage, children }) => { const isActive = page === targetPage; const baseClasses = "py-2 px-4 font-semibold rounded-lg transition"; const activeClasses = "bg-blue-600 text-white shadow-md"; const inactiveClasses = "bg-white text-gray-700 hover:bg-gray-200"; return <button className={`${baseClasses} ${isActive ? activeClasses : inactiveClasses}`} onClick={() => setPage(targetPage)}>{children}</button>; }
+
+        return (
+        <div className="container mx-auto p-4 space-y-6">
+            <div className="flex flex-col md:flex-row justify-between items-center gap-4">
+                <h1 className="text-3xl font-bold text-gray-800">Análise de Performance</h1>
+                <div className="flex items-center gap-2 p-1 bg-gray-200 rounded-lg flex-wrap justify-center">
+                    <NavButton targetPage="production">Produção</NavButton>
+                    <NavButton targetPage="dashboard">Painel Mensal</NavButton>
+                    <NavButton targetPage="evaluation">Avaliação Diária</NavButton>
+                    <NavButton targetPage="consultation">Consultar Avaliações</NavButton>
+                    <NavButton targetPage="awards">Painel de Premiação</NavButton>
+                    <NavButton targetPage="registration">Cadastros</NavButton>
+                </div>
+                <button onClick={handleLogout} className="bg-red-500 text-white font-bold py-2 px-4 rounded-lg hover:bg-red-600 transition">Sair</button>
+            </div>
+            
+            {page === 'dashboard' && <MonthlyDashboard data={data} lineColors={lineColors}/>}
+            {page === 'production' && <ProductionPage data={data} user={user} />}
+            {page === 'evaluation' && <DailyEvaluationPage data={data} />}
+            {page === 'consultation' && <ConsultationPage />}
+            {page === 'awards' && <AwardsPage data={data} />}
+            {page === 'registration' && <RegistrationPage />}
+        </div>
+        );
+    }
+
+    function App() {
+        const [user, setUser] = React.useState(null);
+        const [authLoading, setAuthLoading] = React.useState(true);
+        const [data, setData] = React.useState({}); 
+        const [dataLoading, setDataLoading] = React.useState(false);
+        const [error, setError] = React.useState('');
+
+        React.useEffect(() => {
+            const unsubscribe = window.firebase9.onAuthStateChanged(auth, user => {
+                setUser(user);
+                setAuthLoading(false);
+            });
+            return () => unsubscribe();
+        }, []);
+
+        React.useEffect(() => {
+            if(user) {
+                try {
+                    const savedData = localStorage.getItem('filetadorData');
+                    if (savedData) {
+                        setData(JSON.parse(savedData));
+                    }
+                } catch (err) {
+                    console.error("Erro ao carregar dados salvos:", err);
+                    setError("Não foi possível carregar os dados salvos.");
+                }
+            }
+        }, [user]);
+
+        const processSheetData = (sheetData) => { const employees = {}; sheetData.forEach(row => { const employeeName = row['Filetador']; const dateValue = row['Data']; if (!employeeName || !dateValue) return; const jsDate = parseDate(dateValue); if(!jsDate) { console.warn("Data inválida ignorada:", dateValue); return; }; if (!employees[employeeName]) employees[employeeName] = { daily: [] }; const fileValue = parseFloat(String(row['Filé produzido (kg) - Ajuste'] || '0').replace(',', '.')) || 0; const peixeValue = parseFloat(String(row['Peixe recebido (kg)'] || '0').replace(',', '.')) || 0; let rendValue = peixeValue > 0 ? fileValue / peixeValue : 0; employees[employeeName].daily.push({ date: formatDate(jsDate), month: jsDate.getUTCMonth(), week: `Semana ${getWeekNumber(jsDate)}`, file: fileValue, peixe: peixeValue, rend: rendValue, }); }); return employees; };
+        
+        const handleLogout = () => {
+            window.firebase9.signOut(auth).then(() => {
+                setData(null);
+                console.log('Usuário deslogado.');
+            });
+        };
+
+        if (authLoading) {
+            return <div className="flex justify-center items-center h-screen">Carregando autenticação...</div>;
+        }
+
+        if (!user) {
+            return <LoginPage />;
+        }
+        
+        return <Dashboard data={data} handleLogout={handleLogout} user={user} />;
+    };
+
+    root.render(<App />);
+    </script>
+</body>
+</html>

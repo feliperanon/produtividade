@@ -1,0 +1,726 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dashboard de Performance de Filetadores</title>
+  <!-- Tailwind CSS para estilização -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Bibliotecas React -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <!-- Babel para transpilar JSX -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <!-- SheetJS (xlsx) para ler arquivos Excel -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <!-- Dependências para Recharts -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prop-types/15.8.1/prop-types.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/recharts/2.12.7/Recharts.min.js"></script>
+</head>
+<body class="bg-gray-100 font-sans">
+  <div id="root" class="container mx-auto p-4"></div>
+
+  <script type="text/babel">
+    // Inicializando a raiz do React
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+
+    // --- Funções Utilitárias ---
+    const excelSerialDateToJSDate = (serial) => {
+      if (!serial || isNaN(serial)) return null;
+      const utc_days = Math.floor(serial - 25569);
+      const utc_value = utc_days * 86400;
+      return new Date(utc_value * 1000);
+    };
+    
+    const formatDate = (date) => {
+        if(!date) return "Data Inválida";
+        return new Intl.DateTimeFormat('pt-BR', { timeZone: 'UTC' }).format(date);
+    };
+
+    const getWeekNumber = (d) => {
+        d = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+        d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay()||7));
+        const yearStart = new Date(Date.UTC(d.getUTCFullYear(),0,1));
+        const weekNo = Math.ceil((((d - yearStart) / 86400000) + 1)/7);
+        return weekNo;
+    };
+    
+    const formatNumberWithSeparators = (num) => {
+        if (num === null || num === undefined || isNaN(num)) {
+            return '0,00';
+        }
+        return num.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    };
+
+    const parseDate = (dateInput) => {
+      if (!dateInput) return null;
+      if (typeof dateInput === 'number' && dateInput > 1) {
+        return excelSerialDateToJSDate(dateInput);
+      }
+      if (typeof dateInput === 'string') {
+        const parts = dateInput.split(/[\/\- ]/);
+        if (parts.length >= 2) {
+            const day = parseInt(parts[0], 10);
+            const monthStr = parts[1] ? parts[1].toLowerCase() : '';
+            const months = {'jan':0,'fev':1,'mar':2,'abr':3,'mai':4,'jun':5,'jul':6,'ago':7,'set':8,'out':9,'nov':10,'dez':11};
+            const month = months[monthStr.substring(0, 3)];
+            if (!isNaN(day) && month !== undefined) {
+                const year = parts[2] ? parseInt(parts[2], 10) : new Date().getFullYear();
+                return new Date(Date.UTC(year, month, day));
+            }
+        }
+      }
+      const d = new Date(dateInput);
+      return (d instanceof Date && !isNaN(d)) ? d : null;
+    };
+    
+    const monthNames = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
+
+    // --- Componente: Modal de Feedback com IA ---
+    function FeedbackModal({ feedback, onClose, onCopy }) {
+        if (!feedback) return null;
+
+        return (
+            <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center z-50">
+                <div className="bg-white p-6 rounded-lg shadow-xl max-w-2xl w-full mx-4">
+                    <h3 className="text-2xl font-bold text-gray-800 mb-4">✨ Feedback Gerado por IA</h3>
+                    <div className="bg-gray-50 p-4 rounded-md max-h-96 overflow-y-auto mb-6">
+                        {feedback.isLoading ? (
+                             <p className="text-gray-700 animate-pulse">Gerando feedback, por favor aguarde...</p>
+                        ) : (
+                             <p className="text-gray-700 whitespace-pre-wrap">{feedback.text}</p>
+                        )}
+                    </div>
+                    <div className="flex justify-end gap-4">
+                        <button onClick={onCopy} disabled={feedback.isLoading} className="bg-blue-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-blue-700 transition disabled:bg-gray-400">Copiar Texto</button>
+                        <button onClick={onClose} className="bg-gray-300 text-gray-800 font-bold py-2 px-4 rounded-lg hover:bg-gray-400 transition">Fechar</button>
+                    </div>
+                </div>
+            </div>
+        );
+    }
+    
+    // --- Componente: Painel Mensal ---
+    function MonthlyDashboard({ data, lineColors }) {
+        const [selectedMonth, setSelectedMonth] = React.useState('all');
+        const [selectedWeek, setSelectedWeek] = React.useState('all');
+        const [selectedFiletador, setSelectedFiletador] = React.useState('Todos');
+        const [feedback, setFeedback] = React.useState(null);
+
+        const getAvailableMonths = (d) => {
+            if (!d) return [];
+            const monthSet = new Set();
+            Object.values(d).forEach(emp => emp.daily.forEach(day => monthSet.add(day.month)));
+            return [...monthSet].sort((a,b) => a - b);
+        };
+
+        const getAvailableWeeks = (d) => {
+            if (!d) return [];
+            const weekSet = new Set();
+            Object.values(d).forEach(emp => {
+                emp.daily.forEach(day => weekSet.add(day.week));
+            });
+            return [...weekSet].sort((a,b) => parseInt(a.split(' ')[1]) - parseInt(b.split(' ')[1]));
+        };
+        
+        const dataParaDashboard = React.useMemo(() => {
+            if (!data) return null;
+            if (selectedMonth === 'all') return data;
+
+            const monthlyData = {};
+            Object.keys(data).forEach(name => {
+                const monthlyEntries = data[name].daily.filter(day => day.month === selectedMonth);
+                if (monthlyEntries.length > 0) {
+                    monthlyData[name] = { ...data[name], daily: monthlyEntries };
+                }
+            });
+            return monthlyData;
+        }, [data, selectedMonth]);
+
+
+        const filetadoresDoPeriodo = ['Todos', ...Object.keys(dataParaDashboard || {}).sort()];
+        const availableWeeks = getAvailableWeeks(dataParaDashboard);
+
+        const aggregatedData = React.useMemo(() => {
+            if (!dataParaDashboard) return {};
+            const summary = {};
+            Object.keys(dataParaDashboard).forEach(name => {
+                const emp = dataParaDashboard[name];
+                const relevantEntries = emp.daily.filter(d => (selectedWeek === 'all' || d.week === selectedWeek));
+                if (relevantEntries.length > 0) {
+                    const totalFile = relevantEntries.reduce((sum, d) => sum + d.file, 0);
+                    const totalPeixe = relevantEntries.reduce((sum, d) => sum + d.peixe, 0);
+                    const rend = totalPeixe > 0 ? totalFile / totalPeixe : 0; 
+                    summary[name] = { file: totalFile, peixe: totalPeixe, rend };
+                }
+            });
+            return summary;
+        }, [dataParaDashboard, selectedWeek]);
+
+        const filteredAggregatedData = React.useMemo(() => Object.entries(aggregatedData).filter(([name]) => selectedFiletador === 'Todos' || name === selectedFiletador), [aggregatedData, selectedFiletador]);
+        
+        const totalSummary = React.useMemo(() => filteredAggregatedData.reduce((acc, [_, weekData]) => {
+            acc.peixe += weekData.peixe || 0;
+            acc.file += weekData.file || 0;
+            return acc;
+        }, { peixe: 0, file: 0 }), [filteredAggregatedData]);
+
+        const avgRend = totalSummary.peixe > 0 ? ((totalSummary.file / totalSummary.peixe) * 100).toFixed(2) : '0.00';
+        const topPerformer = React.useMemo(() => filteredAggregatedData.reduce((top, [name, emp]) => (emp.rend || 0) > top.rend ? { name, rend: emp.rend * 100 } : top, { name: '', rend: 0 }), [filteredAggregatedData]);
+        
+        const rendTrendData = React.useMemo(() => {
+            if (!dataParaDashboard) return [];
+            return availableWeeks.map(week => {
+                const weekData = { week };
+                Object.keys(dataParaDashboard).filter(name => selectedFiletador === 'Todos' || name === selectedFiletador)
+                  .forEach(name => {
+                      const emp = dataParaDashboard[name];
+                      const weekEntries = emp.daily.filter(d => d.week === week);
+                      if (weekEntries.length > 0) {
+                          const totalFile = weekEntries.reduce((sum,d) => sum + d.file, 0);
+                          const totalPeixe = weekEntries.reduce((sum,d) => sum + d.peixe, 0);
+                          weekData[name] = parseFloat((totalPeixe > 0 ? (totalFile / totalPeixe * 100) : 0).toFixed(2));
+                      } else {
+                          weekData[name] = null;
+                      }
+                  });
+                return weekData;
+            });
+        }, [dataParaDashboard, availableWeeks, selectedFiletador]);
+
+        const peixeSemanalChartData = React.useMemo(() => {
+            if (!dataParaDashboard) return [];
+            return availableWeeks.map(week => {
+                let totalPeixeSemana = 0;
+                Object.keys(dataParaDashboard).filter(name => selectedFiletador === 'Todos' || name === selectedFiletador)
+                  .forEach(name => {
+                      totalPeixeSemana += dataParaDashboard[name].daily
+                          .filter(d => d.week === week)
+                          .reduce((sum, d) => sum + d.peixe, 0);
+                  });
+                return { week, 'Peixe Recebido (kg)': totalPeixeSemana };
+            });
+        }, [dataParaDashboard, availableWeeks, selectedFiletador]);
+        
+        const handleGenerateFeedback = async (employeeName, employeeData) => {
+            setFeedback({ text: '', isLoading: true });
+
+            const periodo = selectedWeek === 'all' 
+                ? (selectedMonth === 'all' ? 'todo o período' : `o mês de ${monthNames[selectedMonth]}`) 
+                : `a ${selectedWeek}`;
+                
+            const prompt = `Aja como um gerente de produção de uma indústria de pescado e escreva um feedback construtivo e profissional para o colaborador ${employeeName}, referente ao seu desempenho em ${periodo}.
+    
+    Os dados de performance são:
+    - Total de Filé Produzido: ${formatNumberWithSeparators(employeeData.file)} kg
+    - Total de Peixe Recebido: ${formatNumberWithSeparators(employeeData.peixe)} kg
+    - Rendimento alcançado: ${(employeeData.rend * 100).toFixed(2)}%
+    
+    A média geral de rendimento da equipe no mesmo período foi de ${avgRend}%.
+    
+    Estruture o feedback da seguinte forma:
+    1.  **Reconhecimento:** Comece com um ponto positivo, elogiando o esforço ou um resultado específico (ex: volume de produção, consistência).
+    2.  **Análise e Ponto de Melhoria:** Com base nos dados, aponte uma área para desenvolvimento de forma encorajadora. Se o rendimento estiver abaixo da média, sugira foco em técnicas para maximizar o aproveitamento do peixe. Se estiver acima, parabenize pela eficiência.
+    3.  **Encerramento:** Termine com uma mensagem de incentivo, reforçando a importância do colaborador para a equipe e abrindo espaço para diálogo.`;
+
+            try {
+                 const apiKey = "";
+                 const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+                 const response = await fetch(apiUrl, {
+                     method: 'POST',
+                     headers: { 'Content-Type': 'application/json' },
+                     body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+                 });
+                 const result = await response.json();
+
+                 if (result.candidates && result.candidates[0].content.parts[0].text) {
+                    setFeedback({ text: result.candidates[0].content.parts[0].text, isLoading: false });
+                 } else {
+                    throw new Error("Resposta da API inválida.");
+                 }
+
+            } catch(err) {
+                console.error("Erro ao chamar API Gemini:", err);
+                setFeedback({ text: "Não foi possível gerar o feedback. Tente novamente.", isLoading: false });
+            }
+        };
+
+        const handleCopyFeedback = () => {
+            if(feedback && feedback.text){
+                const textarea = document.createElement('textarea');
+                textarea.value = feedback.text;
+                document.body.appendChild(textarea);
+                textarea.select();
+                document.execCommand('copy');
+                document.body.removeChild(textarea);
+                alert('Feedback copiado para a área de transferência!');
+            }
+        };
+
+
+        const handleMonthChange = (e) => {
+            const monthValue = e.target.value === 'all' ? 'all' : parseInt(e.target.value, 10);
+            setSelectedMonth(monthValue);
+            setSelectedWeek('all'); 
+            setSelectedFiletador('Todos'); 
+        };
+        
+        const getTitle = () => {
+            const filetadorText = selectedFiletador === 'Todos' ? 'Todos' : selectedFiletador;
+            if (selectedMonth === 'all') {
+                return `Resumo - Todos os Meses (${filetadorText})`;
+            }
+            if (selectedWeek === 'all') {
+                return `Resumo - ${monthNames[selectedMonth]} (${filetadorText})`;
+            }
+            return `${selectedWeek} - Resumo (${filetadorText})`;
+        };
+
+        return (
+            <div className="space-y-6">
+                 <FeedbackModal feedback={feedback} onClose={() => setFeedback(null)} onCopy={handleCopyFeedback} />
+                <div className="flex flex-wrap justify-center items-center gap-4 p-4 bg-white rounded-lg shadow">
+                    <select value={selectedMonth} onChange={handleMonthChange} className="p-2 border rounded-lg bg-white text-gray-700 shadow-sm focus:ring-2 focus:ring-blue-500">
+                        <option value="all">Todos os Meses</option>
+                        {getAvailableMonths(data).map(monthIndex => <option key={monthIndex} value={monthIndex}>{monthNames[monthIndex]}</option>)}
+                    </select>
+                    <select value={selectedWeek} onChange={(e) => setSelectedWeek(e.target.value)} className="p-2 border rounded-lg bg-white text-gray-700 shadow-sm focus:ring-2 focus:ring-blue-500" disabled={selectedMonth === 'all'}>
+                        <option value="all">Mês Inteiro</option>
+                        {availableWeeks.map(week => <option key={week} value={week}>{week}</option>)}
+                    </select>
+                    <select value={selectedFiletador} onChange={(e) => setSelectedFiletador(e.target.value)} className="p-2 border rounded-lg bg-white text-gray-700 shadow-sm focus:ring-2 focus:ring-blue-500">
+                        {filetadoresDoPeriodo.map(f => <option key={f} value={f}>{f}</option>)}
+                    </select>
+                </div>
+                <div className="bg-white p-6 rounded-lg shadow-md">
+                    <h2 className="text-2xl font-semibold text-gray-800 mb-4">{getTitle()}</h2>
+                    <div className="grid md:grid-cols-3 gap-4 text-center">
+                        <div className="p-4 bg-blue-50 rounded-lg"><p className="text-lg font-medium text-blue-800">Peixe Recebido (Kg)</p><p className="text-3xl font-bold text-blue-600">{formatNumberWithSeparators(totalSummary.peixe)}</p></div>
+                        <div className="p-4 bg-green-50 rounded-lg"><p className="text-lg font-medium text-green-800">Filé Produzido (Kg)</p><p className="text-3xl font-bold text-green-600">{formatNumberWithSeparators(totalSummary.file)}</p></div>
+                        <div className="p-4 bg-yellow-50 rounded-lg"><p className="text-lg font-medium text-yellow-800">Rendimento Total (%)</p><p className="text-3xl font-bold text-yellow-600">{avgRend}%</p></div>
+                    </div>
+                    {topPerformer.name && <p className="mt-6 text-center text-lg text-gray-700"><span className="font-bold text-indigo-600">⭐ Destaque do Período:</span> {topPerformer.name} com <span className="font-semibold">{topPerformer.rend.toFixed(2)}%</span> de rendimento!</p>}
+                </div>
+                <div className="grid lg:grid-cols-2 gap-6">
+                    <div className="bg-white p-6 rounded-lg shadow-md">
+                        <h2 className="text-2xl font-semibold text-gray-800 mb-4">Peixe Recebido por Semana (Kg)</h2>
+                        <Recharts.ResponsiveContainer width="100%" height={400}>
+                            <Recharts.BarChart data={peixeSemanalChartData}>
+                                <Recharts.CartesianGrid strokeDasharray="3 3" /><Recharts.XAxis dataKey="week" /><Recharts.YAxis />
+                                <Recharts.Tooltip formatter={(value) => `${formatNumberWithSeparators(value)} kg`} />
+                                <Recharts.Legend /><Recharts.Bar dataKey="Peixe Recebido (kg)" fill="#3b82f6" />
+                            </Recharts.BarChart>
+                        </Recharts.ResponsiveContainer>
+                    </div>
+                    <div className="bg-white p-6 rounded-lg shadow-md">
+                        <h2 className="text-2xl font-semibold text-gray-800 mb-4">Tendência de Rendimento Semanal (%)</h2>
+                        <Recharts.ResponsiveContainer width="100%" height={400}>
+                            <Recharts.LineChart data={rendTrendData}><Recharts.CartesianGrid strokeDasharray="3 3" /><Recharts.XAxis dataKey="week" /><Recharts.YAxis domain={['dataMin - 2', 'dataMax + 2']} tickFormatter={(tick) => `${tick}%`} /><Recharts.Tooltip formatter={(value) => `${value ? value.toFixed(2) : 'N/A'}%`} /><Recharts.Legend />
+                                {Object.keys(dataParaDashboard || {}).filter(name => selectedFiletador === 'Todos' || name === selectedFiletador).map(name => <Recharts.Line key={name} type="monotone" dataKey={name} stroke={lineColors[name]} strokeWidth={2} name={name} connectNulls={false} />)}
+                            </Recharts.LineChart>
+                        </Recharts.ResponsiveContainer>
+                    </div>
+                </div>
+                <div className="space-y-4">
+                    {filteredAggregatedData.length > 0 ? (
+                        filteredAggregatedData.map(([name, employeePeriodData]) => (
+                            <div key={name} className="bg-white p-6 rounded-lg shadow-md">
+                                <div className="flex justify-between items-center mb-3">
+                                    <h3 className="text-xl font-bold text-gray-700">{name}</h3>
+                                    <button onClick={() => handleGenerateFeedback(name, employeePeriodData)} className="bg-gradient-to-r from-purple-500 to-indigo-600 text-white font-bold py-2 px-4 rounded-lg hover:from-purple-600 hover:to-indigo-700 transition shadow-md">✨ Gerar Feedback com IA</button>
+                                </div>
+                                <div className="overflow-x-auto">
+                                    <table className="w-full text-left border-collapse">
+                                        <thead className="bg-gray-200"><tr><th className="p-3 border font-semibold">Data</th><th className="p-3 border font-semibold">Peixe Recebido (Kg)</th><th className="p-3 border font-semibold">Filé Produzido (Kg)</th><th className="p-3 border font-semibold">Rendimento (%)</th></tr></thead>
+                                        <tbody>{dataParaDashboard[name].daily.filter(d => (selectedWeek === 'all' || d.week === selectedWeek)).map((day, index) => (<tr key={index} className="hover:bg-gray-50"><td className="p-2 border">{day.date}</td><td className="p-2 border">{formatNumberWithSeparators(day.peixe)}</td><td className="p-2 border">{formatNumberWithSeparators(day.file)}</td><td className="p-2 border text-blue-600 font-medium">{((day.peixe > 0 ? day.file/day.peixe : 0) * 100).toFixed(2)}%</td></tr>))}</tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        ))
+                    ) : (
+                        <div className="bg-white p-6 rounded-lg shadow-md text-center text-gray-500"><p>Nenhum dado encontrado para o período selecionado.</p></div>
+                    )}
+                </div>
+            </div>
+        );
+    };
+    
+    // --- Componente: Página de Análise Comparativa ---
+    function ComparativePage({ data, lineColors }) {
+        const [selectedMonth, setSelectedMonth] = React.useState('all');
+        const [selectedFiletadores, setSelectedFiletadores] = React.useState([]);
+
+        const getAvailableMonths = (d) => {
+            if (!d) return [];
+            const monthSet = new Set();
+            Object.values(d).forEach(emp => emp.daily.forEach(day => monthSet.add(day.month)));
+            return [...monthSet].sort((a, b) => a - b);
+        };
+
+        const dataDoPeriodo = React.useMemo(() => {
+            if (!data) return null;
+            if (selectedMonth === 'all') return data;
+            const monthlyData = {};
+            Object.keys(data).forEach(name => {
+                const monthlyEntries = data[name].daily.filter(day => day.month === selectedMonth);
+                if (monthlyEntries.length > 0) {
+                    monthlyData[name] = { ...data[name], daily: monthlyEntries };
+                }
+            });
+            return monthlyData;
+        }, [data, selectedMonth]);
+
+        const filetadoresDoPeriodo = Object.keys(dataDoPeriodo || {}).sort();
+
+        const handleFiletadorSelection = (name) => {
+            setSelectedFiletadores(prev => 
+                prev.includes(name) ? prev.filter(item => item !== name) : [...prev, name]
+            );
+        };
+        
+        const rankingData = React.useMemo(() => {
+            if (!dataDoPeriodo) return [];
+            const filetadoresParaMostrar = selectedFiletadores.length > 0 ? selectedFiletadores : filetadoresDoPeriodo;
+
+            return filetadoresParaMostrar.map(name => {
+                const emp = dataDoPeriodo[name];
+                if (!emp) return null;
+                const totalFile = emp.daily.reduce((sum, day) => sum + day.file, 0);
+                const totalPeixe = emp.daily.reduce((sum, day) => sum + day.peixe, 0);
+                const rend = totalPeixe > 0 ? (totalFile / totalPeixe) * 100 : 0;
+                return { name, totalFile, rend };
+            }).filter(Boolean);
+
+        }, [dataDoPeriodo, selectedFiletadores, filetadoresDoPeriodo]);
+
+        const handleMonthChange = (e) => {
+            setSelectedMonth(e.target.value === 'all' ? 'all' : parseInt(e.target.value, 10));
+            setSelectedFiletadores([]);
+        };
+
+        const kiloChartData = [...rankingData].sort((a, b) => b.totalFile - a.totalFile);
+        const rendimentoChartData = [...rankingData].sort((a, b) => b.rend - a.rend);
+        
+        const generateTicks = (min, max) => {
+            const ticks = [];
+            for (let i = min; i <= max; i += 5) {
+                ticks.push(i);
+            }
+            return ticks;
+        };
+        const maxRendimento = rendimentoChartData.length > 0 ? Math.max(...rendimentoChartData.map(d => d.rend)) : 50;
+        const rendimentoTicks = generateTicks(30, Math.ceil(maxRendimento / 5) * 5);
+
+
+        return (
+            <div className="space-y-6">
+                <div className="bg-white p-6 rounded-lg shadow-md">
+                    <h2 className="text-2xl font-semibold text-gray-800 mb-4">Filtros da Comparação</h2>
+                    <div className="flex flex-col md:flex-row gap-6">
+                        <div>
+                            <label htmlFor="month-select" className="block text-sm font-medium text-gray-700 mb-1">Selecionar Mês</label>
+                            <select id="month-select" value={selectedMonth} onChange={handleMonthChange} className="p-2 border rounded-lg bg-white text-gray-700 shadow-sm w-full">
+                                <option value="all">Todos os Meses</option>
+                                {getAvailableMonths(data).map(monthIndex => <option key={monthIndex} value={monthIndex}>{monthNames[monthIndex]}</option>)}
+                            </select>
+                        </div>
+                        <div className="flex-1">
+                             <label className="block text-sm font-medium text-gray-700 mb-1">Selecionar Colaboradores (deixe em branco para ver todos)</label>
+                             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2 p-2 border rounded-lg max-h-48 overflow-y-auto">
+                                {filetadoresDoPeriodo.map(name => (
+                                    <label key={name} className="flex items-center space-x-2 p-1 rounded-md hover:bg-gray-100 cursor-pointer">
+                                        <input type="checkbox" checked={selectedFiletadores.includes(name)} onChange={() => handleFiletadorSelection(name)} className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"/>
+                                        <span className="text-sm text-gray-700">{name}</span>
+                                    </label>
+                                ))}
+                             </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div className="space-y-8">
+                    <div className="bg-white p-6 rounded-lg shadow-md">
+                        <h3 className="text-xl font-semibold text-gray-800 mb-4">Ranking por Kilo Produzido</h3>
+                        <Recharts.ResponsiveContainer width="100%" height={kiloChartData.length * 40 + 60}>
+                            <Recharts.BarChart data={kiloChartData} layout="vertical" margin={{ top: 5, right: 30, left: 100, bottom: 20 }}>
+                                <Recharts.CartesianGrid strokeDasharray="3 3" />
+                                <Recharts.XAxis type="number" tickFormatter={formatNumberWithSeparators} />
+                                <Recharts.YAxis type="category" dataKey="name" width={100} interval={0} />
+                                <Recharts.Tooltip formatter={(value) => `${formatNumberWithSeparators(value)} kg`} />
+                                <Recharts.Bar dataKey="totalFile" name="Filé (kg)">
+                                {kiloChartData.map((entry) => (
+                                    <Recharts.Cell key={`cell-${entry.name}`} fill={lineColors[entry.name] || '#8884d8'} />
+                                ))}
+                                </Recharts.Bar>
+                            </Recharts.BarChart>
+                        </Recharts.ResponsiveContainer>
+                    </div>
+                    <div className="bg-white p-6 rounded-lg shadow-md">
+                        <h3 className="text-xl font-semibold text-gray-800 mb-4">Ranking por Rendimento</h3>
+                         <Recharts.ResponsiveContainer width="100%" height={rendimentoChartData.length * 40 + 60}>
+                            <Recharts.BarChart data={rendimentoChartData} layout="vertical" margin={{ top: 5, right: 30, left: 100, bottom: 20 }}>
+                                <Recharts.CartesianGrid strokeDasharray="3 3" />
+                                <Recharts.XAxis type="number" domain={[30, 'dataMax + 2']} ticks={rendimentoTicks} tickFormatter={(v) => `${v}%`}/>
+                                <Recharts.YAxis type="category" dataKey="name" width={100} interval={0} />
+                                <Recharts.Tooltip formatter={(value) => `${value.toFixed(2)}%`} />
+                                <Recharts.Bar dataKey="rend" name="Rendimento (%)">
+                                {rendimentoChartData.map((entry) => (
+                                    <Recharts.Cell key={`cell-${entry.name}`} fill={lineColors[entry.name] || '#82ca9d'} />
+                                ))}
+                                </Recharts.Bar>
+                            </Recharts.BarChart>
+                        </Recharts.ResponsiveContainer>
+                    </div>
+                </div>
+            </div>
+        );
+    };
+    
+    // --- Componente: Página de Avaliação Diária da Empresa ---
+    function DailyEvaluationPage({ data }) {
+        const today = new Date().toISOString().split('T')[0];
+        const [inputs, setInputs] = React.useState({
+            selectedDate: today,
+            fornecedor: '',
+            lote: '',
+            pesoPiscicultura: '',
+            pesoMoradaFish: '',
+            refugo: '',
+            pesoFinalFileManual: '',
+        });
+        
+        const rendimentoTeorico = React.useMemo(() => {
+            if (!data) return 42; 
+            let totalFile = 0;
+            let totalPeixe = 0;
+            Object.values(data).forEach(emp => {
+                totalFile += emp.daily.reduce((sum, day) => sum + day.file, 0);
+                totalPeixe += emp.daily.reduce((sum, day) => sum + day.peixe, 0);
+            });
+            return totalPeixe > 0 ? (totalFile / totalPeixe) * 100 : 42;
+        }, [data]);
+
+        const handleInputChange = (e) => {
+            const { name, value } = e.target;
+            setInputs(prev => ({ ...prev, [name]: value }));
+        };
+        
+        const dailyData = React.useMemo(() => {
+            if(!data || !inputs.selectedDate) return { peixeRecebido: 0, pesoFinalFiletador: 0 };
+            
+            const targetDate = formatDate(new Date(inputs.selectedDate));
+            let totalPeixe = 0;
+            let totalFile = 0;
+
+            Object.values(data).forEach(emp => {
+                emp.daily.forEach(day => {
+                    if (day.date === targetDate) {
+                        totalPeixe += day.peixe;
+                        totalFile += day.file;
+                    }
+                });
+            });
+            return { peixeRecebido: totalPeixe, pesoFinalFiletador: totalFile };
+        }, [data, inputs.selectedDate]);
+        
+        const weekDay = new Date(inputs.selectedDate).toLocaleDateString('pt-BR', { weekday: 'long', timeZone: 'UTC' });
+
+        // Cálculos
+        const pesoPiscicultura = parseFloat(inputs.pesoPiscicultura) || 0;
+        const pesoMoradaFish = parseFloat(inputs.pesoMoradaFish) || 0;
+        const refugo = parseFloat(inputs.refugo) || 0;
+        const pesoFinalFileManual = parseFloat(inputs.pesoFinalFileManual) || 0;
+        const entradaFiletagem = dailyData.peixeRecebido;
+        const pesoFinalFiletador = dailyData.pesoFinalFiletador;
+
+        const difPisciMf = pesoMoradaFish > 0 ? (1 - (pesoPiscicultura / pesoMoradaFish)) : 0;
+        const peixeParaFile = pesoMoradaFish > 0 ? pesoMoradaFish - refugo : 0;
+        const difFiletagemEntrada = entradaFiletagem - peixeParaFile;
+        const difPercentual = peixeParaFile > 0 ? (difFiletagemEntrada / peixeParaFile) : 0;
+        const rendimentoGeral = peixeParaFile > 0 ? (pesoFinalFileManual / peixeParaFile) : 0;
+        const difTeoricoReal = (rendimentoTeorico / 100) - rendimentoGeral;
+        const rendimentoFiletadores = entradaFiletagem > 0 ? (pesoFinalFiletador / entradaFiletagem) : 0;
+        const rendimentoRefino = pesoFinalFiletador > 0 ? (pesoFinalFileManual / pesoFinalFiletador) : 0;
+        
+        const ResultCard = ({ title, value, unit = '' }) => (
+            <div className="bg-gray-100 p-3 rounded-lg">
+                <p className="text-sm font-medium text-gray-600">{title}</p>
+                <p className="text-lg font-bold text-gray-900">{value}{unit}</p>
+            </div>
+        );
+
+        return (
+            <div className="bg-white p-6 rounded-lg shadow-md">
+                <h2 className="text-3xl font-bold text-gray-800 mb-6 text-center">Avaliação Diária da Empresa</h2>
+                <div className="grid md:grid-cols-2 gap-8">
+                    {/* Coluna de Entradas Manuais */}
+                    <div className="space-y-4">
+                        <h3 className="text-xl font-semibold text-gray-700 border-b pb-2">Entradas Manuais</h3>
+                        <div><label className="block text-sm font-medium text-gray-700">Data da Avaliação</label><input type="date" name="selectedDate" value={inputs.selectedDate} onChange={handleInputChange} className="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm"/></div>
+                        <div><label className="block text-sm font-medium text-gray-700">Fornecedor</label><input type="text" name="fornecedor" value={inputs.fornecedor} onChange={handleInputChange} className="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm"/></div>
+                        <div><label className="block text-sm font-medium text-gray-700">Lote do Peixe</label><input type="text" name="lote" value={inputs.lote} onChange={handleInputChange} className="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm"/></div>
+                        <div><label className="block text-sm font-medium text-gray-700">Peso Bruto Piscicultura (Kg)</label><input type="number" name="pesoPiscicultura" value={inputs.pesoPiscicultura} onChange={handleInputChange} className="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm"/></div>
+                        <div><label className="block text-sm font-medium text-gray-700">Peso Bruto Morada Fish (Kg)</label><input type="number" name="pesoMoradaFish" value={inputs.pesoMoradaFish} onChange={handleInputChange} className="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm"/></div>
+                        <div><label className="block text-sm font-medium text-gray-700">Refugo Tilápia (Kg)</label><input type="number" name="refugo" value={inputs.refugo} onChange={handleInputChange} className="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm"/></div>
+                        <div><label className="block text-sm font-medium text-gray-700">Peso Final Filé (Kg)</label><input type="number" name="pesoFinalFileManual" value={inputs.pesoFinalFileManual} onChange={handleInputChange} className="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm"/></div>
+                    </div>
+
+                    {/* Coluna de Resultados e Cálculos */}
+                    <div className="space-y-4">
+                        <h3 className="text-xl font-semibold text-gray-700 border-b pb-2">Resultados e KPIs</h3>
+                        <ResultCard title="Dia da Semana" value={weekDay} />
+                        <ResultCard title="Entrada Filetagem (Kg)" value={formatNumberWithSeparators(entradaFiletagem)} unit=" kg" />
+                        <ResultCard title="Peso Final Filetador (Kg)" value={formatNumberWithSeparators(pesoFinalFiletador)} unit=" kg" />
+                        <ResultCard title="Diferença (%) (MF - Pisci.)" value={(difPisciMf * 100).toFixed(2)} unit=" %" />
+                        <ResultCard title="Peixe P/ Filé (Kg)" value={formatNumberWithSeparators(peixeParaFile)} unit=" kg" />
+                        <ResultCard title="Diferença (Kg) Filetagem - Entrada" value={formatNumberWithSeparators(difFiletagemEntrada)} unit=" kg" />
+                        <ResultCard title="Dif. (%)" value={(difPercentual * 100).toFixed(2)} unit=" %" />
+                        <ResultCard title="Rendimento Filetadores (%)" value={(rendimentoFiletadores * 100).toFixed(2)} unit=" %" />
+                        <ResultCard title="Rendimento do Refino (%)" value={(rendimentoRefino * 100).toFixed(2)} unit=" %" />
+                        <ResultCard title="Rendimento Geral (%)" value={(rendimentoGeral * 100).toFixed(2)} unit=" %" />
+                        <ResultCard title="Rendimento Teórico (Base Histórica)" value={rendimentoTeorico.toFixed(2)} unit=" %" />
+                        <ResultCard title="Dif. Teórico - Real" value={((rendimentoGeral * 100) - rendimentoTeorico).toFixed(2)} unit=" %" />
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
+
+    // --- Componente Principal ---
+    function App() {
+      const [page, setPage] = React.useState('dashboard');
+      const [data, setData] = React.useState(null);
+      const [loading, setLoading] = React.useState(true);
+      const [error, setError] = React.useState('');
+
+      React.useEffect(() => {
+        try {
+          const savedData = localStorage.getItem('filetadorData');
+          if (savedData) setData(JSON.parse(savedData));
+        } catch (err) {
+          console.error("Erro ao carregar dados salvos:", err);
+          setError("Não foi possível carregar os dados salvos.");
+        } finally {
+          setLoading(false);
+        }
+      }, []);
+      
+      const processSheetData = (sheetData) => {
+        const employees = {};
+        sheetData.forEach(row => {
+          const employeeName = row['Filetador'];
+          const dateValue = row['Data'];
+          if (!employeeName || !dateValue) return; 
+          
+          const jsDate = parseDate(dateValue);
+          if(!jsDate) return; 
+
+          if (!employees[employeeName]) employees[employeeName] = { daily: [] };
+          
+          const fileValue = parseFloat(String(row['Filé produzido (kg) - Ajuste'] || '0').replace(',', '.')) || 0;
+          const peixeValue = parseFloat(String(row['Peixe recebido (kg)'] || '0').replace(',', '.')) || 0;
+          let rendValue = peixeValue > 0 ? fileValue / peixeValue : 0;
+
+          employees[employeeName].daily.push({
+            date: formatDate(jsDate),
+            month: jsDate.getUTCMonth(),
+            week: `Semana ${getWeekNumber(jsDate)}`,
+            file: fileValue, peixe: peixeValue, rend: rendValue,
+          });
+        });
+        return employees;
+      };
+      
+      const handleFileUpload = (event) => {
+        const file = event.target.files[0];
+        if (!file) return;
+        setLoading(true);
+        setError('');
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          try {
+            const fileContent = e.target.result;
+            const workbook = XLSX.read(fileContent, { type: 'binary' });
+            const sheetName = workbook.SheetNames[0];
+            const worksheet = workbook.Sheets[sheetName];
+            const json = XLSX.utils.sheet_to_json(worksheet);
+            const processedData = processSheetData(json);
+            
+            if (Object.keys(processedData).length === 0) {
+                setError("Nenhum dado válido encontrado. Verifique os nomes das colunas.");
+            } else {
+                setData(processedData);
+                localStorage.setItem('filetadorData', JSON.stringify(processedData));
+                setPage('dashboard');
+            }
+          } catch (err) {
+            setError("Falha ao ler o arquivo. Verifique se o formato está correto.");
+          } finally {
+            setLoading(false);
+          }
+        };
+        reader.readAsBinaryString(file);
+      };
+
+      const clearData = () => {
+        setData(null);
+        localStorage.removeItem('filetadorData');
+        setPage('dashboard');
+      };
+
+      const lineColors = React.useMemo(() => {
+          const colors = {};
+          const allFiletadores = Object.keys(data || {}).sort();
+          allFiletadores.forEach((name, index) => {
+              colors[name] = `hsl(${(index * 40) % 360}, 70%, 50%)`;
+          });
+          return colors;
+      }, [data]);
+
+      if (loading) return <div className="text-center p-10">Carregando...</div>;
+
+      if (!data) {
+        return (
+          <div className="flex flex-col justify-center items-center h-screen bg-gray-100 text-center">
+            <h1 className="text-3xl font-bold text-gray-800 mb-4">Dashboard de Performance</h1>
+            <p className="text-gray-600 mb-6">Carregue sua planilha Excel (.xlsx, .csv) para começar.</p>
+            <div className="p-6 bg-white rounded-lg shadow-md border-dashed border-2 border-gray-300">
+                <input type="file" className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100" accept=".xlsx, .xls, .csv" onChange={handleFileUpload}/>
+            </div>
+            {error && <p className="mt-4 text-red-600 font-bold max-w-md">{error}</p>}
+          </div>
+        );
+      }
+      
+      const NavButton = ({ targetPage, children }) => {
+        const isActive = page === targetPage;
+        const baseClasses = "py-2 px-4 font-semibold rounded-lg transition";
+        const activeClasses = "bg-blue-600 text-white shadow-md";
+        const inactiveClasses = "bg-white text-gray-700 hover:bg-gray-200";
+        return <button className={`${baseClasses} ${isActive ? activeClasses : inactiveClasses}`} onClick={() => setPage(targetPage)}>{children}</button>;
+      }
+
+      return (
+        <div className="space-y-6">
+            <div className="flex flex-col md:flex-row justify-between items-center gap-4">
+                <h1 className="text-3xl font-bold text-gray-800">Análise de Performance</h1>
+                <div className="flex items-center gap-2 p-1 bg-gray-200 rounded-lg">
+                    <NavButton targetPage="dashboard">Painel Mensal</NavButton>
+                    <NavButton targetPage="ranking">Análise Comparativa</NavButton>
+                    <NavButton targetPage="evaluation">Avaliação Diária</NavButton>
+                </div>
+                <button onClick={clearData} className="bg-red-500 text-white font-bold py-2 px-4 rounded-lg hover:bg-red-600 transition">Limpar Dados</button>
+            </div>
+            
+            {page === 'dashboard' && <MonthlyDashboard data={data} lineColors={lineColors}/>}
+            {page === 'ranking' && <ComparativePage data={data} lineColors={lineColors} />}
+            {page === 'evaluation' && <DailyEvaluationPage data={data} />}
+
+        </div>
+      );
+    };
+    root.render(<App />);
+  </script>
+</body>
+</html>

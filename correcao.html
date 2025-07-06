@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sistema de Produção de Tilápias - Morada Fish</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+</head>
+<body class="bg-gray-100 font-sans">
+  <div id="root" class="container mx-auto p-4"></div>
+
+  <script type="text/babel">
+    // Configuração Firebase
+    const firebaseConfig = {
+      apiKey: "AIzaSyAHfit46TkZaOgEHVX3knmUnqUIVIXDmCI",
+      authDomain: "painel-filetadores.firebaseapp.com",
+      projectId: "painel-filetadores",
+      storageBucket: "painel-filetadores.appspot.com",
+      messagingSenderId: "536826620604",
+      appId: "1:536826620604:web:89930f02e9c91930cc7eb9",
+      measurementId: "G-TFGJQKF1W6"
+    };
+    firebase.initializeApp(firebaseConfig);
+    const auth = firebase.auth();
+    const db = firebase.firestore();
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+
+    function App() {
+      const [user, setUser] = React.useState(null);
+      const [role, setRole] = React.useState(null);
+      const [page, setPage] = React.useState('');
+
+      React.useEffect(() => {
+        const unsubscribe = auth.onAuthStateChanged(async (usr) => {
+          if (usr) {
+            const snap = await db.collection('usuarios').doc(usr.uid).get();
+            const data = snap.data();
+            setUser(usr);
+            setRole(data?.perfil);
+            setPage('producao');
+          } else {
+            setUser(null);
+            setRole(null);
+            setPage('login');
+          }
+        });
+        return () => unsubscribe();
+      }, []);
+
+      if (page === 'login') return <LoginPage />;
+      if (page === 'cadastroUsuarios') return <CadastroUsuarios onBack={() => setPage('producao')} />;
+      if (page === 'cadastroProducao') return <CadastroProducao onBack={() => setPage('producao')} />;
+      if (page === 'producao') return <Producao onLogout={() => auth.signOut()} user={user} role={role} setPage={setPage} />;
+
+      return <div>Carregando...</div>;
+    }
+
+    function LoginPage() {
+      const [email, setEmail] = React.useState('');
+      const [senha, setSenha] = React.useState('');
+      const [erro, setErro] = React.useState('');
+
+      const login = async () => {
+        try {
+          await auth.signInWithEmailAndPassword(email, senha);
+        } catch (err) {
+          setErro('Credenciais inválidas');
+        }
+      };
+
+      return (
+        <div className="flex flex-col items-center justify-center h-screen">
+          <h1 className="text-2xl font-bold mb-6">Login - Morada Fish</h1>
+          <input type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} className="mb-2 p-2 border rounded w-64" />
+          <input type="password" placeholder="Senha" value={senha} onChange={(e) => setSenha(e.target.value)} className="mb-4 p-2 border rounded w-64" />
+          <button onClick={login} className="bg-blue-600 text-white px-6 py-2 rounded">Entrar</button>
+          {erro && <p className="text-red-500 mt-2">{erro}</p>}
+        </div>
+      );
+    }
+
+    function CadastroUsuarios({ onBack }) {
+      const [nome, setNome] = React.useState('');
+      const [email, setEmail] = React.useState('');
+      const [senha, setSenha] = React.useState('');
+      const [perfil, setPerfil] = React.useState('Operador');
+
+      const cadastrar = async () => {
+        const cred = await auth.createUserWithEmailAndPassword(email, senha);
+        await db.collection('usuarios').doc(cred.user.uid).set({ nome, perfil });
+        alert('Usuário cadastrado com sucesso!');
+        setNome(''); setEmail(''); setSenha('');
+      };
+
+      return (
+        <div className="p-4">
+          <h2 className="text-xl font-bold mb-4">Cadastro de Usuário</h2>
+          <input placeholder="Nome" className="block mb-2 p-2 border rounded w-64" value={nome} onChange={(e) => setNome(e.target.value)} />
+          <input placeholder="Email" className="block mb-2 p-2 border rounded w-64" value={email} onChange={(e) => setEmail(e.target.value)} />
+          <input placeholder="Senha" type="password" className="block mb-2 p-2 border rounded w-64" value={senha} onChange={(e) => setSenha(e.target.value)} />
+          <select value={perfil} onChange={(e) => setPerfil(e.target.value)} className="block mb-4 p-2 border rounded w-64">
+            <option value="Administrador">Administrador</option>
+            <option value="Gerente">Gerente</option>
+            <option value="Operador">Operador</option>
+            <option value="Analítico">Analítico</option>
+          </select>
+          <button onClick={cadastrar} className="bg-green-600 text-white px-6 py-2 rounded mr-2">Salvar</button>
+          <button onClick={onBack} className="bg-gray-400 text-white px-6 py-2 rounded">Voltar</button>
+        </div>
+      );
+    }
+
+    function CadastroProducao({ onBack }) {
+      const [nome, setNome] = React.useState('');
+      const [funcao, setFuncao] = React.useState('');
+
+      const salvar = async () => {
+        await db.collection('colaboradores').add({ nome, funcao });
+        alert('Colaborador cadastrado.');
+        setNome('');
+      };
+
+      return (
+        <div className="p-4">
+          <h2 className="text-xl font-bold mb-4">Cadastro de Colaborador</h2>
+          <input placeholder="Nome" value={nome} onChange={(e) => setNome(e.target.value)} className="block mb-2 p-2 border rounded w-64" />
+          <input placeholder="Função" value={funcao} onChange={(e) => setFuncao(e.target.value)} className="block mb-4 p-2 border rounded w-64" />
+          <button onClick={salvar} className="bg-green-600 text-white px-6 py-2 rounded mr-2">Salvar</button>
+          <button onClick={onBack} className="bg-gray-400 text-white px-6 py-2 rounded">Voltar</button>
+        </div>
+      );
+    }
+
+    function Producao({ user, role, setPage, onLogout }) {
+      return (
+        <div className="p-4 space-y-4">
+          <div className="flex justify-between items-center">
+            <h1 className="text-2xl font-bold">Rotina de Produção - Bem-vindo {user.email}</h1>
+            <button onClick={onLogout} className="bg-red-600 text-white px-4 py-2 rounded">Sair</button>
+          </div>
+          <div className="space-x-2">
+            {role === 'Administrador' && <button onClick={() => setPage('cadastroUsuarios')} className="bg-blue-600 text-white px-4 py-2 rounded">Cadastro de Usuários</button>}
+            {role !== 'Analítico' && <button onClick={() => setPage('cadastroProducao')} className="bg-blue-600 text-white px-4 py-2 rounded">Cadastro de Colaboradores</button>}
+            <button className="bg-green-600 text-white px-4 py-2 rounded">Iniciar Produção</button>
+          </div>
+          <div className="bg-white p-4 rounded shadow">
+            <p className="text-gray-600">Aqui será implementada a lógica de leitura da balança CH34x, validação de intervalo de 2 minutos por colaborador e cálculo de rendimento.</p>
+          </div>
+        </div>
+      );
+    }
+
+    root.render(<App />);
+  </script>
+</body>
+</html>
