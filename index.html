@@ -1,0 +1,845 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard de Performance de Filetadores</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prop-types/15.8.1/prop-types.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/recharts/2.12.7/Recharts.min.js"></script>
+    
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/9.6.10/firebase-app.js";
+        import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/9.6.10/firebase-auth.js";
+        import { getFirestore, collection, addDoc, onSnapshot, query, where, limit, getDocs, doc, updateDoc, deleteDoc, orderBy, serverTimestamp, writeBatch } from "https://www.gstatic.com/firebasejs/9.6.10/firebase-firestore.js";
+        window.firebase9 = { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut, getFirestore, collection, addDoc, onSnapshot, query, where, limit, getDocs, doc, updateDoc, deleteDoc, orderBy, serverTimestamp, writeBatch, initializeApp };
+    </script>
+</head>
+<body class="bg-gray-100 font-sans">
+    <div id="root"></div>
+
+    <script type="text/babel">
+    // --- Configuração do Firebase ---
+    const firebaseConfig = {
+        apiKey: "AIzaSyAHfit46TkZaOgEHVX3knmUnqUIVIXDmCI",
+        authDomain: "painel-filetadores.firebaseapp.com",
+        projectId: "painel-filetadores",
+        storageBucket: "painel-filetadores.appspot.com",
+        messagingSenderId: "536826620604",
+        appId: "1:536826620604:web:89930f02e9c91930cc7eb9",
+        measurementId: "G-TFGJQKF1W6"
+    };
+
+    // --- Inicialização do Firebase (usando a v9) ---
+    let app, auth, db;
+    try {
+        app = window.firebase9.initializeApp(firebaseConfig);
+        auth = window.firebase9.getAuth(app);
+        db = window.firebase9.getFirestore(app);
+    } catch (e) {
+        console.error("Erro ao inicializar o Firebase:", e);
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+
+    // --- Funções Utilitárias ---
+    const formatDate = (date) => { 
+        if(!date) return "Data Inválida"; 
+        return new Intl.DateTimeFormat('pt-BR', { timeZone: 'UTC' }).format(date); 
+    };
+    
+    const formatDateTime = (date) => { 
+        if (!date) return "Data Inválida"; 
+        const dateObj = date.toDate ? date.toDate() : date; 
+        return new Intl.DateTimeFormat('pt-BR', { 
+            day: '2-digit', month: '2-digit', year: 'numeric', 
+            hour: '2-digit', minute: '2-digit' 
+        }).format(dateObj); 
+    };
+    
+    const formatTime = (date) => { 
+        if (!date) return "--:--"; 
+        const dateObj = date.toDate ? date.toDate() : date; 
+        return new Intl.DateTimeFormat('pt-BR', { 
+            hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' 
+        }).format(dateObj); 
+    };
+    
+    const getWeekNumber = (d) => { 
+        d = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate())); 
+        d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay()||7)); 
+        const yearStart = new Date(Date.UTC(d.getUTCFullYear(),0,1)); 
+        const weekNo = Math.ceil((((d - yearStart) / 86400000) + 1)/7); 
+        return weekNo; 
+    };
+    
+    const formatNumberWithSeparators = (num) => { 
+        if (num === null || num === undefined || isNaN(num)) { 
+            return '0,00'; 
+        } 
+        return num.toLocaleString('pt-BR', { 
+            minimumFractionDigits: 2, 
+            maximumFractionDigits: 2 
+        }); 
+    };
+
+    const monthNames = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", 
+                       "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
+    
+    const safeParseFloat = (str) => { 
+        if (typeof str !== 'string' || !str) return 0; 
+        const cleanStr = str.toString().replace(',', '.'); 
+        return parseFloat(cleanStr) || 0; 
+    };
+
+    // --- Função para Processar Dados de Produção do Firebase ---
+    const processProductionDataForMonthly = (events, lotes) => {
+        console.log("Processando dados de produção:", events.length, "eventos");
+        
+        const monthlyData = {};
+        const ciclosCompletos = [];
+        
+        // Processar eventos para formar ciclos completos
+        const eventsByColaborador = {};
+        events.forEach(event => {
+            if (!eventsByColaborador[event.colaborador]) {
+                eventsByColaborador[event.colaborador] = [];
+            }
+            eventsByColaborador[event.colaborador].push(event);
+        });
+        
+        // Para cada colaborador, processar ciclos
+        Object.entries(eventsByColaborador).forEach(([colaborador, colaboradorEvents]) => {
+            colaboradorEvents.sort((a, b) => a.timestamp.toDate() - b.timestamp.toDate());
+            
+            let entradasPendentes = [];
+            
+            colaboradorEvents.forEach(event => {
+                const eventDate = event.timestamp.toDate();
+                
+                if (event.tipo === 'ENTRADA_PEIXE') {
+                    entradasPendentes.push({
+                        colaborador,
+                        pesoEntrada: event.peso,
+                        timestampEntrada: eventDate,
+                        date: formatDate(eventDate)
+                    });
+                } else if (event.tipo === 'SAIDA_FILE') {
+                    // Procurar entrada correspondente
+                    const entradaIndex = entradasPendentes.findIndex(e => e.colaborador === colaborador);
+                    
+                    if (entradaIndex !== -1) {
+                        const entrada = entradasPendentes[entradaIndex];
+                        entradasPendentes.splice(entradaIndex, 1);
+                        
+                        // Calcular tempo do ciclo
+                        const tempoMS = eventDate - entrada.timestampEntrada;
+                        let tempoCicloMin = tempoMS / (1000 * 60);
+                        
+                        // Regra: Se atravessar das 11h às 12h, subtrair 60 minutos
+                        const horaEntrada = entrada.timestampEntrada.getHours();
+                        const horaSaida = eventDate.getHours();
+                        
+                        if (horaEntrada < 12 && horaSaida >= 12) {
+                            tempoCicloMin -= 60;
+                        }
+                        
+                        // Calcular métricas
+                        const rendimento = entrada.pesoEntrada > 0 ? (event.peso / entrada.pesoEntrada) * 100 : 0;
+                        const produtividade = tempoCicloMin > 0 ? event.peso / tempoCicloMin : 0;
+                        
+                        ciclosCompletos.push({
+                            colaborador,
+                            date: entrada.date,
+                            month: entrada.timestampEntrada.getMonth(),
+                            year: entrada.timestampEntrada.getFullYear(),
+                            week: `Semana ${getWeekNumber(entrada.timestampEntrada)}`,
+                            pesoEntrada: entrada.pesoEntrada,
+                            pesoSaida: event.peso,
+                            tempoCicloMin,
+                            rendimento,
+                            produtividade,
+                            timestampEntrada: entrada.timestampEntrada,
+                            timestampSaida: eventDate
+                        });
+                    }
+                }
+            });
+        });
+        
+        console.log("Ciclos completos processados:", ciclosCompletos.length);
+        
+        // Agrupar por colaborador e processar dados mensais
+        ciclosCompletos.forEach(ciclo => {
+            if (!monthlyData[ciclo.colaborador]) {
+                monthlyData[ciclo.colaborador] = {
+                    daily: []
+                };
+            }
+            
+            // Verificar se já existe entrada para esta data
+            const existingDayIndex = monthlyData[ciclo.colaborador].daily.findIndex(
+                day => day.date === ciclo.date
+            );
+            
+            if (existingDayIndex !== -1) {
+                // Somar aos dados existentes
+                const existingDay = monthlyData[ciclo.colaborador].daily[existingDayIndex];
+                existingDay.peixe += ciclo.pesoEntrada;
+                existingDay.file += ciclo.pesoSaida;
+                existingDay.ciclos += 1;
+                existingDay.tempoTotalMin += ciclo.tempoCicloMin;
+                existingDay.tempoMedioMin = existingDay.tempoTotalMin / existingDay.ciclos;
+                existingDay.rendimento = existingDay.peixe > 0 ? (existingDay.file / existingDay.peixe) * 100 : 0;
+                existingDay.produtividadeMedia = existingDay.tempoTotalMin > 0 ? existingDay.file / existingDay.tempoTotalMin : 0;
+            } else {
+                // Criar nova entrada diária
+                monthlyData[ciclo.colaborador].daily.push({
+                    date: ciclo.date,
+                    month: ciclo.month,
+                    year: ciclo.year,
+                    week: ciclo.week,
+                    peixe: ciclo.pesoEntrada,
+                    file: ciclo.pesoSaida,
+                    ciclos: 1,
+                    tempoTotalMin: ciclo.tempoCicloMin,
+                    tempoMedioMin: ciclo.tempoCicloMin,
+                    rendimento: ciclo.rendimento,
+                    produtividadeMedia: ciclo.produtividade
+                });
+            }
+        });
+        
+        console.log("Dados mensais processados:", Object.keys(monthlyData).length, "colaboradores");
+        return monthlyData;
+    };
+
+    // --- Função para Gerar Painel Mensal Automático ---
+    const generateMonthlyPanel = async (selectedYear, selectedMonth) => {
+        try {
+            console.log(`Gerando painel mensal para ${monthNames[selectedMonth]} ${selectedYear}`);
+            
+            // Buscar eventos de produção do período
+            const startDate = new Date(selectedYear, selectedMonth, 1);
+            const endDate = new Date(selectedYear, selectedMonth + 1, 0, 23, 59, 59);
+            
+            const eventsQuery = window.firebase9.query(
+                window.firebase9.collection(db, "eventos_producao"),
+                window.firebase9.where("timestamp", ">=", startDate),
+                window.firebase9.where("timestamp", "<=", endDate),
+                window.firebase9.orderBy("timestamp", "asc")
+            );
+            
+            const eventsSnapshot = await window.firebase9.getDocs(eventsQuery);
+            const events = eventsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            
+            console.log(`Encontrados ${events.length} eventos de produção`);
+            
+            // Buscar lotes do período
+            const lotesQuery = window.firebase9.query(
+                window.firebase9.collection(db, "lotes_producao"),
+                window.firebase9.where("dataIniciado", ">=", startDate),
+                window.firebase9.where("dataIniciado", "<=", endDate)
+            );
+            
+            const lotesSnapshot = await window.firebase9.getDocs(lotesQuery);
+            const lotes = lotesSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            
+            // Processar dados para formato mensal
+            const monthlyData = processProductionDataForMonthly(events, lotes);
+            
+            // Gerar resumo do painel
+            const painelSummary = generatePanelSummary(monthlyData, selectedYear, selectedMonth);
+            
+            // Salvar painel mensal no Firebase
+            const painelData = {
+                ano: selectedYear,
+                mes: selectedMonth,
+                mesNome: monthNames[selectedMonth],
+                dataGeracao: new Date(),
+                colaboradores: monthlyData,
+                resumo: painelSummary,
+                geradoAutomaticamente: true
+            };
+            
+            await window.firebase9.addDoc(window.firebase9.collection(db, "paineis_mensais"), painelData);
+            
+            console.log("Painel mensal gerado e salvo com sucesso!");
+            return painelData;
+            
+        } catch (error) {
+            console.error("Erro ao gerar painel mensal:", error);
+            throw error;
+        }
+    };
+
+    // --- Função para Gerar Resumo do Painel ---
+    const generatePanelSummary = (monthlyData, year, month) => {
+        const colaboradores = Object.keys(monthlyData);
+        const summary = {
+            totalColaboradores: colaboradores.length,
+            diasTrabalhados: 0,
+            totalPeixe: 0,
+            totalFile: 0,
+            rendimentoMedio: 0,
+            produtividadeMedioGeral: 0,
+            melhorColaborador: { nome: '', rendimento: 0 },
+            ranking: []
+        };
+        
+        // Calcular métricas por colaborador
+        const colaboradorMetrics = colaboradores.map(nome => {
+            const dados = monthlyData[nome];
+            const diasTrabalhados = dados.daily.length;
+            const totalPeixe = dados.daily.reduce((sum, day) => sum + day.peixe, 0);
+            const totalFile = dados.daily.reduce((sum, day) => sum + day.file, 0);
+            const totalCiclos = dados.daily.reduce((sum, day) => sum + day.ciclos, 0);
+            const tempoTotalMin = dados.daily.reduce((sum, day) => sum + day.tempoTotalMin, 0);
+            
+            const rendimentoMedio = totalPeixe > 0 ? (totalFile / totalPeixe) * 100 : 0;
+            const produtividadeMedia = tempoTotalMin > 0 ? totalFile / tempoTotalMin : 0;
+            const tempoMedioCiclo = totalCiclos > 0 ? tempoTotalMin / totalCiclos : 0;
+            
+            // Calcular consistência (variação dos tempos de ciclo)
+            const temposCiclo = dados.daily.map(day => day.tempoMedioMin);
+            const mediaTempos = temposCiclo.reduce((a, b) => a + b, 0) / temposCiclo.length;
+            const variancia = temposCiclo.reduce((sum, tempo) => sum + Math.pow(tempo - mediaTempos, 2), 0) / temposCiclo.length;
+            const consistencia = Math.sqrt(variancia);
+            
+            // Nota final ponderada conforme especificado
+            const notaFinal = (rendimentoMedio * 0.4) + (produtividadeMedia * 100 * 0.3) + 
+                             ((100 - consistencia) * 0.2) + ((totalPeixe / 1000) * 0.1);
+            
+            return {
+                nome,
+                diasTrabalhados,
+                totalPeixe,
+                totalFile,
+                totalCiclos,
+                rendimentoMedio,
+                produtividadeMedia,
+                tempoMedioCiclo,
+                consistencia,
+                notaFinal
+            };
+        });
+        
+        // Atualizar resumo geral
+        summary.diasTrabalhados = Math.max(...colaboradorMetrics.map(c => c.diasTrabalhados));
+        summary.totalPeixe = colaboradorMetrics.reduce((sum, c) => sum + c.totalPeixe, 0);
+        summary.totalFile = colaboradorMetrics.reduce((sum, c) => sum + c.totalFile, 0);
+        summary.rendimentoMedio = summary.totalPeixe > 0 ? (summary.totalFile / summary.totalPeixe) * 100 : 0;
+        summary.produtividadeMedioGeral = colaboradorMetrics.reduce((sum, c) => sum + c.produtividadeMedia, 0) / colaboradores.length;
+        
+        // Ranking por rendimento
+        summary.ranking = colaboradorMetrics.sort((a, b) => b.rendimentoMedio - a.rendimentoMedio);
+        summary.melhorColaborador = summary.ranking[0] || { nome: '', rendimento: 0 };
+        
+        return summary;
+    };
+
+    // --- COMPONENTES REACT ---
+
+    function LoginPage() {
+        const [email, setEmail] = React.useState('');
+        const [password, setPassword] = React.useState('');
+        const [error, setError] = React.useState('');
+        const [isLoading, setIsLoading] = React.useState(false);
+
+        const handleLogin = (e) => {
+            e.preventDefault();
+            setIsLoading(true);
+            setError('');
+
+            window.firebase9.signInWithEmailAndPassword(auth, email, password)
+                .then((userCredential) => {
+                    console.log('Login bem-sucedido:', userCredential.user.email);
+                })
+                .catch((err) => {
+                    setError('E-mail ou senha inválidos. Tente novamente.');
+                    console.error("Erro de autenticação:", err.message);
+                })
+                .finally(() => {
+                    setIsLoading(false);
+                });
+        };
+
+        return (
+            <div className="flex flex-col justify-center items-center min-h-screen bg-gray-100">
+                <div className="w-full max-w-md bg-white p-8 rounded-xl shadow-lg">
+                    <h1 className="text-3xl font-bold text-gray-800 text-center mb-2">Login</h1>
+                    <p className="text-center text-gray-500 mb-6">Acesse o painel de performance.</p>
+                    
+                    <form onSubmit={handleLogin} className="space-y-6">
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700">E-mail</label>
+                            <input
+                                type="email"
+                                value={email}
+                                onChange={(e) => setEmail(e.target.value)}
+                                className="mt-1 block w-full p-3 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
+                                required
+                            />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700">Senha</label>
+                            <input
+                                type="password"
+                                value={password}
+                                onChange={(e) => setPassword(e.target.value)}
+                                className="mt-1 block w-full p-3 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
+                                required
+                            />
+                        </div>
+                        
+                        {error && (
+                            <p className="text-red-600 text-sm text-center">{error}</p>
+                        )}
+
+                        <div>
+                            <button 
+                                type="submit" 
+                                disabled={isLoading}
+                                className="w-full flex justify-center py-3 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:bg-gray-400"
+                            >
+                                {isLoading ? 'Entrando...' : 'Entrar'}
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        );
+    }
+
+    // --- Componente para Geração Automática do Painel Mensal ---
+    function AutoMonthlyPanelGenerator() {
+        const [selectedYear, setSelectedYear] = React.useState(new Date().getFullYear());
+        const [selectedMonth, setSelectedMonth] = React.useState(new Date().getMonth());
+        const [isGenerating, setIsGenerating] = React.useState(false);
+        const [generatedPanels, setGeneratedPanels] = React.useState([]);
+        const [loading, setLoading] = React.useState(true);
+        const [notification, setNotification] = React.useState(null);
+
+        const showNotification = (message, type = 'success') => {
+            setNotification({ message, type });
+            setTimeout(() => setNotification(null), 5000);
+        };
+
+        // Buscar painéis já gerados
+        React.useEffect(() => {
+            const q = window.firebase9.query(
+                window.firebase9.collection(db, "paineis_mensais"),
+                window.firebase9.orderBy("dataGeracao", "desc"),
+                window.firebase9.limit(10)
+            );
+            
+            const unsubscribe = window.firebase9.onSnapshot(q, (snapshot) => {
+                const panels = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                setGeneratedPanels(panels);
+                setLoading(false);
+            });
+            
+            return () => unsubscribe();
+        }, []);
+
+        const handleGeneratePanel = async () => {
+            setIsGenerating(true);
+            try {
+                const painelData = await generateMonthlyPanel(selectedYear, selectedMonth);
+                showNotification(
+                    `Painel mensal de ${monthNames[selectedMonth]} ${selectedYear} gerado com sucesso! ` +
+                    `Processados ${painelData.resumo.totalColaboradores} colaboradores.`,
+                    'success'
+                );
+            } catch (error) {
+                console.error("Erro ao gerar painel:", error);
+                showNotification(`Erro ao gerar painel: ${error.message}`, 'error');
+            } finally {
+                setIsGenerating(false);
+            }
+        };
+
+        return (
+            <div className="bg-white p-6 md:p-8 rounded-lg shadow-md space-y-8">
+                <div className="text-center">
+                    <h2 className="text-3xl font-bold text-gray-800">Gerador Automático de Painel Mensal</h2>
+                    <p className="text-gray-600 mt-2">
+                        Gere automaticamente indicadores mensais a partir dos dados de produção
+                    </p>
+                </div>
+
+                {notification && (
+                    <div className={`p-4 rounded-md border-l-4 ${
+                        notification.type === 'success' 
+                            ? 'bg-green-100 border-green-500 text-green-700' 
+                            : 'bg-red-100 border-red-500 text-red-700'
+                    }`}>
+                        <p>{notification.message}</p>
+                    </div>
+                )}
+
+                <div className="bg-blue-50 p-6 rounded-lg">
+                    <h3 className="text-xl font-semibold text-blue-800 mb-4">📊 Gerar Novo Painel</h3>
+                    
+                    <div className="grid md:grid-cols-3 gap-6 items-end">
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-2">Ano</label>
+                            <select 
+                                value={selectedYear} 
+                                onChange={(e) => setSelectedYear(parseInt(e.target.value))}
+                                className="w-full p-3 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
+                            >
+                                {[2023, 2024, 2025].map(year => (
+                                    <option key={year} value={year}>{year}</option>
+                                ))}
+                            </select>
+                        </div>
+                        
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-2">Mês</label>
+                            <select 
+                                value={selectedMonth} 
+                                onChange={(e) => setSelectedMonth(parseInt(e.target.value))}
+                                className="w-full p-3 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
+                            >
+                                {monthNames.map((month, index) => (
+                                    <option key={index} value={index}>{month}</option>
+                                ))}
+                            </select>
+                        </div>
+                        
+                        <div>
+                            <button 
+                                onClick={handleGeneratePanel}
+                                disabled={isGenerating}
+                                className="w-full bg-blue-600 text-white font-bold py-3 px-6 rounded-lg hover:bg-blue-700 transition disabled:bg-gray-400 disabled:cursor-not-allowed"
+                            >
+                                {isGenerating ? (
+                                    <span className="flex items-center justify-center">
+                                        <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                        </svg>
+                                        Gerando...
+                                    </span>
+                                ) : '🚀 Gerar Painel'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <div className="bg-gray-50 p-6 rounded-lg">
+                    <h3 className="text-xl font-semibold text-gray-800 mb-4">📋 Métricas Calculadas Automaticamente</h3>
+                    
+                    <div className="grid md:grid-cols-2 gap-6">
+                        <div>
+                            <h4 className="text-lg font-medium text-gray-700 mb-3">Por Colaborador:</h4>
+                            <ul className="space-y-2 text-sm text-gray-600">
+                                <li>• <strong>Tempo do ciclo (min):</strong> Entrada até saída (descontando intervalo 11h-12h)</li>
+                                <li>• <strong>Rendimento (%):</strong> (filé / peixe) × 100</li>
+                                <li>• <strong>Produtividade (kg/min):</strong> filé / tempo_do_ciclo</li>
+                                <li>• <strong>Consistência:</strong> Variação entre tempos de ciclo</li>
+                                <li>• <strong>Total de ciclos no mês</strong></li>
+                                <li>• <strong>Dias trabalhados</strong></li>
+                            </ul>
+                        </div>
+                        
+                        <div>
+                            <h4 className="text-lg font-medium text-gray-700 mb-3">Resumos e Rankings:</h4>
+                            <ul className="space-y-2 text-sm text-gray-600">
+                                <li>• <strong>Média de rendimento mensal</strong></li>
+                                <li>• <strong>Média de produtividade mensal</strong></li>
+                                <li>• <strong>Tempo médio por ciclo</strong></li>
+                                <li>• <strong>Ranking por melhor rendimento</strong></li>
+                                <li>• <strong>Ranking por produtividade</strong></li>
+                                <li>• <strong>Nota final ponderada</strong> (rendimento×0.4 + produtividade×0.3 + consistência×0.2 + volume×0.1)</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+
+                <div className="bg-white border border-gray-200 rounded-lg">
+                    <h3 className="text-xl font-semibold text-gray-800 p-6 border-b">📈 Painéis Gerados Recentemente</h3>
+                    
+                    {loading ? (
+                        <div className="p-6 text-center text-gray-500">Carregando...</div>
+                    ) : generatedPanels.length === 0 ? (
+                        <div className="p-6 text-center text-gray-500">Nenhum painel gerado ainda.</div>
+                    ) : (
+                        <div className="overflow-x-auto">
+                            <table className="w-full">
+                                <thead className="bg-gray-50">
+                                    <tr>
+                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Período</th>
+                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Data Geração</th>
+                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Colaboradores</th>
+                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Total Peixe (kg)</th>
+                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Total Filé (kg)</th>
+                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Rendimento Médio</th>
+                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Melhor Colaborador</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-gray-200">
+                                    {generatedPanels.map(panel => (
+                                        <tr key={panel.id} className="hover:bg-gray-50">
+                                            <td className="px-6 py-4 whitespace-nowrap font-medium text-gray-900">
+                                                {panel.mesNome} {panel.ano}
+                                            </td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-gray-500">
+                                                {formatDateTime(panel.dataGeracao)}
+                                            </td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-gray-500">
+                                                {panel.resumo?.totalColaboradores || 0}
+                                            </td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-gray-500">
+                                                {formatNumberWithSeparators(panel.resumo?.totalPeixe || 0)}
+                                            </td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-gray-500">
+                                                {formatNumberWithSeparators(panel.resumo?.totalFile || 0)}
+                                            </td>
+                                            <td className="px-6 py-4 whitespace-nowrap font-medium text-blue-600">
+                                                {(panel.resumo?.rendimentoMedio || 0).toFixed(2)}%
+                                            </td>
+                                            <td className="px-6 py-4 whitespace-nowrap font-medium text-green-600">
+                                                {panel.resumo?.melhorColaborador?.nome || 'N/A'}
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+                    )}
+                </div>
+            </div>
+        );
+    }
+
+    // --- Componente de Produção Simplificado ---
+    function ProductionPage() {
+        return (
+            <div className="bg-white p-6 md:p-8 rounded-lg shadow-md">
+                <h2 className="text-3xl font-bold text-gray-800 text-center mb-6">Registro de Produção Diária</h2>
+                <div className="bg-blue-100 border border-blue-300 rounded-lg p-6 text-center">
+                    <h3 className="text-xl font-bold text-blue-800 mb-2">Em Desenvolvimento</h3>
+                    <p className="text-blue-700">
+                        Esta página permite registrar a produção diária dos colaboradores. 
+                        Os dados registrados aqui serão automaticamente processados para gerar o painel mensal.
+                    </p>
+                    <div className="mt-4 p-4 bg-white rounded-lg">
+                        <p className="text-sm text-gray-600">
+                            <strong>Funcionalidades planejadas:</strong><br/>
+                            • Registro de entrada de peixe por colaborador<br/>
+                            • Registro de saída de filé<br/>
+                            • Cálculo automático de rendimento<br/>
+                            • Controle de tempo de ciclo<br/>
+                            • Gestão de refugos
+                        </p>
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
+    // --- Componente Dashboard Principal ---
+    function Dashboard({ handleLogout, user }) {
+        const [page, setPage] = React.useState('auto-panel');
+        const [monthlyData, setMonthlyData] = React.useState({});
+        const [isLoadingData, setIsLoadingData] = React.useState(false);
+
+        // Buscar dados mensais do Firebase para exibição
+        React.useEffect(() => {
+            if (page === 'monthly') {
+                setIsLoadingData(true);
+                // Buscar o painel mensal mais recente
+                const q = window.firebase9.query(
+                    window.firebase9.collection(db, "paineis_mensais"),
+                    window.firebase9.orderBy("dataGeracao", "desc"),
+                    window.firebase9.limit(1)
+                );
+                
+                window.firebase9.getDocs(q).then(snapshot => {
+                    if (!snapshot.empty) {
+                        const latestPanel = snapshot.docs[0].data();
+                        setMonthlyData(latestPanel.colaboradores || {});
+                    }
+                    setIsLoadingData(false);
+                });
+            }
+        }, [page]);
+
+        const NavButton = ({ targetPage, children, badge = null }) => {
+            const isActive = page === targetPage;
+            const baseClasses = "py-2 px-4 font-semibold rounded-lg transition relative";
+            const activeClasses = "bg-blue-600 text-white shadow-md";
+            const inactiveClasses = "bg-white text-gray-700 hover:bg-gray-200";
+            
+            return (
+                <button 
+                    className={`${baseClasses} ${isActive ? activeClasses : inactiveClasses}`} 
+                    onClick={() => setPage(targetPage)}
+                >
+                    {children}
+                    {badge && (
+                        <span className="absolute -top-2 -right-2 bg-red-500 text-white text-xs rounded-full px-2 py-1">
+                            {badge}
+                        </span>
+                    )}
+                </button>
+            );
+        };
+
+        return (
+            <div className="container mx-auto p-4 space-y-6">
+                <div className="flex flex-col md:flex-row justify-between items-center gap-4">
+                    <div className="text-center md:text-left">
+                        <h1 className="text-3xl font-bold text-gray-800">
+                            Sistema de Análise de Performance - Filetadores
+                        </h1>
+                        <p className="text-gray-600 mt-1">
+                            Bem-vindo, {user?.email} | Geração automática de indicadores mensais
+                        </p>
+                    </div>
+                    
+                    <button 
+                        onClick={handleLogout} 
+                        className="bg-red-500 text-white font-bold py-2 px-4 rounded-lg hover:bg-red-600 transition"
+                    >
+                        Sair
+                    </button>
+                </div>
+
+                <div className="flex items-center gap-2 p-1 bg-gray-200 rounded-lg flex-wrap justify-center">
+                    <NavButton targetPage="auto-panel" badge="NOVO">
+                        🚀 Gerador Automático
+                    </NavButton>
+                    <NavButton targetPage="production">
+                        📊 Produção Diária
+                    </NavButton>
+                    <NavButton targetPage="monthly">
+                        📈 Painel Mensal
+                    </NavButton>
+                    <NavButton targetPage="reports">
+                        📋 Relatórios
+                    </NavButton>
+                </div>
+                
+                <div className="min-h-screen">
+                    {page === 'auto-panel' && <AutoMonthlyPanelGenerator />}
+                    {page === 'production' && <ProductionPage />}
+                    {page === 'monthly' && (
+                        <div className="bg-white p-6 rounded-lg shadow-md">
+                            <h2 className="text-2xl font-bold text-gray-800 mb-4">Painel Mensal</h2>
+                            {isLoadingData ? (
+                                <div className="text-center py-12">
+                                    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
+                                    <p className="mt-4 text-gray-600">Carregando dados mensais...</p>
+                                </div>
+                            ) : Object.keys(monthlyData).length === 0 ? (
+                                <div className="text-center py-12 bg-gray-50 rounded-lg">
+                                    <h3 className="text-xl font-medium text-gray-700 mb-2">
+                                        Nenhum painel mensal encontrado
+                                    </h3>
+                                    <p className="text-gray-500 mb-4">
+                                        Use o "Gerador Automático" para criar seu primeiro painel mensal.
+                                    </p>
+                                    <button 
+                                        onClick={() => setPage('auto-panel')}
+                                        className="bg-blue-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-blue-700 transition"
+                                    >
+                                        Ir para Gerador Automático
+                                    </button>
+                                </div>
+                            ) : (
+                                <div className="space-y-6">
+                                    <div className="grid md:grid-cols-3 gap-6">
+                                        <div className="bg-blue-50 p-4 rounded-lg">
+                                            <h3 className="text-lg font-semibold text-blue-800">Colaboradores</h3>
+                                            <p className="text-2xl font-bold text-blue-600">
+                                                {Object.keys(monthlyData).length}
+                                            </p>
+                                        </div>
+                                        <div className="bg-green-50 p-4 rounded-lg">
+                                            <h3 className="text-lg font-semibold text-green-800">Dados Processados</h3>
+                                            <p className="text-2xl font-bold text-green-600">
+                                                {Object.values(monthlyData).reduce((sum, emp) => sum + emp.daily.length, 0)} dias
+                                            </p>
+                                        </div>
+                                        <div className="bg-purple-50 p-4 rounded-lg">
+                                            <h3 className="text-lg font-semibold text-purple-800">Total Filé (kg)</h3>
+                                            <p className="text-2xl font-bold text-purple-600">
+                                                {formatNumberWithSeparators(
+                                                    Object.values(monthlyData).reduce((sum, emp) => 
+                                                        sum + emp.daily.reduce((daySum, day) => daySum + day.file, 0), 0
+                                                    )
+                                                )}
+                                            </p>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    )}
+                    {page === 'reports' && (
+                        <div className="bg-white p-6 rounded-lg shadow-md">
+                            <h2 className="text-2xl font-bold text-gray-800 mb-4">Relatórios Avançados</h2>
+                            <div className="bg-gray-50 p-6 rounded-lg text-center">
+                                <h3 className="text-xl font-medium text-gray-700 mb-2">Em Desenvolvimento</h3>
+                                <p className="text-gray-500">
+                                    Esta seção conterá relatórios detalhados, análises comparativas e 
+                                    exportações dos dados processados pelo sistema.
+                                </p>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            </div>
+        );
+    }
+
+    // --- Componente Principal da Aplicação ---
+    function App() {
+        const [user, setUser] = React.useState(null);
+        const [authLoading, setAuthLoading] = React.useState(true);
+
+        React.useEffect(() => {
+            const unsubscribe = window.firebase9.onAuthStateChanged(auth, user => {
+                setUser(user);
+                setAuthLoading(false);
+            });
+            return () => unsubscribe();
+        }, []);
+
+        const handleLogout = () => {
+            window.firebase9.signOut(auth).then(() => {
+                console.log('Usuário deslogado.');
+            });
+        };
+
+        if (authLoading) {
+            return (
+                <div className="flex justify-center items-center h-screen bg-gray-100">
+                    <div className="text-center">
+                        <div className="animate-spin rounded-full h-16 w-16 border-b-4 border-blue-600 mx-auto"></div>
+                        <p className="mt-4 text-xl font-semibold text-gray-700">Carregando aplicação...</p>
+                        <p className="text-gray-500">Sistema de Análise de Performance</p>
+                    </div>
+                </div>
+            );
+        }
+
+        if (!user) {
+            return <LoginPage />;
+        }
+        
+        return <Dashboard handleLogout={handleLogout} user={user} />;
+    };
+
+    // --- Renderizar a Aplicação ---
+    root.render(<App />);
+    </script>
+</body>
+</html>
