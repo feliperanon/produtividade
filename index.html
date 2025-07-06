@@ -8,8 +8,6 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/prop-types/15.8.1/prop-types.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/recharts/2.12.7/Recharts.min.js"></script>
     
     <script type="module">
@@ -23,7 +21,6 @@
     <div id="root"></div>
 
     <script type="text/babel">
-    // --- Configuração do Firebase ---
     const firebaseConfig = {
         apiKey: "AIzaSyAHfit46TkZaOgEHVX3knmUnqUIVIXDmCI",
         authDomain: "painel-filetadores.firebaseapp.com",
@@ -34,7 +31,6 @@
         measurementId: "G-TFGJQKF1W6"
     };
 
-    // --- Inicialização do Firebase (usando a v9) ---
     let app, auth, db;
     try {
         app = window.firebase9.initializeApp(firebaseConfig);
@@ -46,7 +42,6 @@
 
     const root = ReactDOM.createRoot(document.getElementById('root'));
 
-    // --- Funções Utilitárias ---
     const formatDate = (date) => { 
         if(!date) return "Data Inválida"; 
         return new Intl.DateTimeFormat('pt-BR', { timeZone: 'UTC' }).format(date); 
@@ -59,22 +54,6 @@
             day: '2-digit', month: '2-digit', year: 'numeric', 
             hour: '2-digit', minute: '2-digit' 
         }).format(dateObj); 
-    };
-    
-    const formatTime = (date) => { 
-        if (!date) return "--:--"; 
-        const dateObj = date.toDate ? date.toDate() : date; 
-        return new Intl.DateTimeFormat('pt-BR', { 
-            hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' 
-        }).format(dateObj); 
-    };
-    
-    const getWeekNumber = (d) => { 
-        d = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate())); 
-        d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay()||7)); 
-        const yearStart = new Date(Date.UTC(d.getUTCFullYear(),0,1)); 
-        const weekNo = Math.ceil((((d - yearStart) / 86400000) + 1)/7); 
-        return weekNo; 
     };
     
     const formatNumberWithSeparators = (num) => { 
@@ -96,14 +75,20 @@
         return parseFloat(cleanStr) || 0; 
     };
 
-    // --- Função para Processar Dados de Produção do Firebase ---
+    const getWeekNumber = (d) => { 
+        d = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate())); 
+        d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay()||7)); 
+        const yearStart = new Date(Date.UTC(d.getUTCFullYear(),0,1)); 
+        const weekNo = Math.ceil((((d - yearStart) / 86400000) + 1)/7); 
+        return weekNo; 
+    };
+
     const processProductionDataForMonthly = (events, lotes) => {
         console.log("Processando dados de produção:", events.length, "eventos");
         
         const monthlyData = {};
         const ciclosCompletos = [];
         
-        // Processar eventos para formar ciclos completos
         const eventsByColaborador = {};
         events.forEach(event => {
             if (!eventsByColaborador[event.colaborador]) {
@@ -112,7 +97,6 @@
             eventsByColaborador[event.colaborador].push(event);
         });
         
-        // Para cada colaborador, processar ciclos
         Object.entries(eventsByColaborador).forEach(([colaborador, colaboradorEvents]) => {
             colaboradorEvents.sort((a, b) => a.timestamp.toDate() - b.timestamp.toDate());
             
@@ -129,18 +113,15 @@
                         date: formatDate(eventDate)
                     });
                 } else if (event.tipo === 'SAIDA_FILE') {
-                    // Procurar entrada correspondente
                     const entradaIndex = entradasPendentes.findIndex(e => e.colaborador === colaborador);
                     
                     if (entradaIndex !== -1) {
                         const entrada = entradasPendentes[entradaIndex];
                         entradasPendentes.splice(entradaIndex, 1);
                         
-                        // Calcular tempo do ciclo
                         const tempoMS = eventDate - entrada.timestampEntrada;
                         let tempoCicloMin = tempoMS / (1000 * 60);
                         
-                        // Regra: Se atravessar das 11h às 12h, subtrair 60 minutos
                         const horaEntrada = entrada.timestampEntrada.getHours();
                         const horaSaida = eventDate.getHours();
                         
@@ -148,7 +129,6 @@
                             tempoCicloMin -= 60;
                         }
                         
-                        // Calcular métricas
                         const rendimento = entrada.pesoEntrada > 0 ? (event.peso / entrada.pesoEntrada) * 100 : 0;
                         const produtividade = tempoCicloMin > 0 ? event.peso / tempoCicloMin : 0;
                         
@@ -171,9 +151,6 @@
             });
         });
         
-        console.log("Ciclos completos processados:", ciclosCompletos.length);
-        
-        // Agrupar por colaborador e processar dados mensais
         ciclosCompletos.forEach(ciclo => {
             if (!monthlyData[ciclo.colaborador]) {
                 monthlyData[ciclo.colaborador] = {
@@ -181,13 +158,11 @@
                 };
             }
             
-            // Verificar se já existe entrada para esta data
             const existingDayIndex = monthlyData[ciclo.colaborador].daily.findIndex(
                 day => day.date === ciclo.date
             );
             
             if (existingDayIndex !== -1) {
-                // Somar aos dados existentes
                 const existingDay = monthlyData[ciclo.colaborador].daily[existingDayIndex];
                 existingDay.peixe += ciclo.pesoEntrada;
                 existingDay.file += ciclo.pesoSaida;
@@ -197,7 +172,6 @@
                 existingDay.rendimento = existingDay.peixe > 0 ? (existingDay.file / existingDay.peixe) * 100 : 0;
                 existingDay.produtividadeMedia = existingDay.tempoTotalMin > 0 ? existingDay.file / existingDay.tempoTotalMin : 0;
             } else {
-                // Criar nova entrada diária
                 monthlyData[ciclo.colaborador].daily.push({
                     date: ciclo.date,
                     month: ciclo.month,
@@ -218,12 +192,10 @@
         return monthlyData;
     };
 
-    // --- Função para Gerar Painel Mensal Automático ---
     const generateMonthlyPanel = async (selectedYear, selectedMonth) => {
         try {
             console.log(`Gerando painel mensal para ${monthNames[selectedMonth]} ${selectedYear}`);
             
-            // Buscar eventos de produção do período
             const startDate = new Date(selectedYear, selectedMonth, 1);
             const endDate = new Date(selectedYear, selectedMonth + 1, 0, 23, 59, 59);
             
@@ -239,7 +211,6 @@
             
             console.log(`Encontrados ${events.length} eventos de produção`);
             
-            // Buscar lotes do período
             const lotesQuery = window.firebase9.query(
                 window.firebase9.collection(db, "lotes_producao"),
                 window.firebase9.where("dataIniciado", ">=", startDate),
@@ -249,13 +220,9 @@
             const lotesSnapshot = await window.firebase9.getDocs(lotesQuery);
             const lotes = lotesSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
             
-            // Processar dados para formato mensal
             const monthlyData = processProductionDataForMonthly(events, lotes);
-            
-            // Gerar resumo do painel
             const painelSummary = generatePanelSummary(monthlyData, selectedYear, selectedMonth);
             
-            // Salvar painel mensal no Firebase
             const painelData = {
                 ano: selectedYear,
                 mes: selectedMonth,
@@ -277,7 +244,6 @@
         }
     };
 
-    // --- Função para Gerar Resumo do Painel ---
     const generatePanelSummary = (monthlyData, year, month) => {
         const colaboradores = Object.keys(monthlyData);
         const summary = {
@@ -291,7 +257,6 @@
             ranking: []
         };
         
-        // Calcular métricas por colaborador
         const colaboradorMetrics = colaboradores.map(nome => {
             const dados = monthlyData[nome];
             const diasTrabalhados = dados.daily.length;
@@ -304,13 +269,11 @@
             const produtividadeMedia = tempoTotalMin > 0 ? totalFile / tempoTotalMin : 0;
             const tempoMedioCiclo = totalCiclos > 0 ? tempoTotalMin / totalCiclos : 0;
             
-            // Calcular consistência (variação dos tempos de ciclo)
             const temposCiclo = dados.daily.map(day => day.tempoMedioMin);
             const mediaTempos = temposCiclo.reduce((a, b) => a + b, 0) / temposCiclo.length;
             const variancia = temposCiclo.reduce((sum, tempo) => sum + Math.pow(tempo - mediaTempos, 2), 0) / temposCiclo.length;
             const consistencia = Math.sqrt(variancia);
             
-            // Nota final ponderada conforme especificado
             const notaFinal = (rendimentoMedio * 0.4) + (produtividadeMedia * 100 * 0.3) + 
                              ((100 - consistencia) * 0.2) + ((totalPeixe / 1000) * 0.1);
             
@@ -328,21 +291,17 @@
             };
         });
         
-        // Atualizar resumo geral
         summary.diasTrabalhados = Math.max(...colaboradorMetrics.map(c => c.diasTrabalhados));
         summary.totalPeixe = colaboradorMetrics.reduce((sum, c) => sum + c.totalPeixe, 0);
         summary.totalFile = colaboradorMetrics.reduce((sum, c) => sum + c.totalFile, 0);
         summary.rendimentoMedio = summary.totalPeixe > 0 ? (summary.totalFile / summary.totalPeixe) * 100 : 0;
         summary.produtividadeMedioGeral = colaboradorMetrics.reduce((sum, c) => sum + c.produtividadeMedia, 0) / colaboradores.length;
         
-        // Ranking por rendimento
         summary.ranking = colaboradorMetrics.sort((a, b) => b.rendimentoMedio - a.rendimentoMedio);
         summary.melhorColaborador = summary.ranking[0] || { nome: '', rendimento: 0 };
         
         return summary;
     };
-
-    // --- COMPONENTES REACT ---
 
     function LoginPage() {
         const [email, setEmail] = React.useState('');
@@ -415,7 +374,6 @@
         );
     }
 
-    // --- Componente para Geração Automática do Painel Mensal ---
     function AutoMonthlyPanelGenerator() {
         const [selectedYear, setSelectedYear] = React.useState(new Date().getFullYear());
         const [selectedMonth, setSelectedMonth] = React.useState(new Date().getMonth());
@@ -429,7 +387,6 @@
             setTimeout(() => setNotification(null), 5000);
         };
 
-        // Buscar painéis já gerados
         React.useEffect(() => {
             const q = window.firebase9.query(
                 window.firebase9.collection(db, "paineis_mensais"),
@@ -618,7 +575,6 @@
         );
     }
 
-    // --- Componente de Produção Simplificado ---
     function ProductionPage() {
         return (
             <div className="bg-white p-6 md:p-8 rounded-lg shadow-md">
@@ -644,17 +600,14 @@
         );
     }
 
-    // --- Componente Dashboard Principal ---
     function Dashboard({ handleLogout, user }) {
         const [page, setPage] = React.useState('auto-panel');
         const [monthlyData, setMonthlyData] = React.useState({});
         const [isLoadingData, setIsLoadingData] = React.useState(false);
 
-        // Buscar dados mensais do Firebase para exibição
         React.useEffect(() => {
             if (page === 'monthly') {
                 setIsLoadingData(true);
-                // Buscar o painel mensal mais recente
                 const q = window.firebase9.query(
                     window.firebase9.collection(db, "paineis_mensais"),
                     window.firebase9.orderBy("dataGeracao", "desc"),
@@ -800,7 +753,6 @@
         );
     }
 
-    // --- Componente Principal da Aplicação ---
     function App() {
         const [user, setUser] = React.useState(null);
         const [authLoading, setAuthLoading] = React.useState(true);
@@ -838,7 +790,6 @@
         return <Dashboard handleLogout={handleLogout} user={user} />;
     };
 
-    // --- Renderizar a Aplicação ---
     root.render(<App />);
     </script>
 </body>
